@@ -1,0 +1,6 @@
+{
+  "name": "SheeGlam",
+  "description": "Tracks and updates employee payment details from an existing Google Form / Google Sheet, calculating dues, visualizing revenue, and marking payments.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
