@@ -55,6 +55,8 @@ class PaymentViewModel(application: Application) : AndroidViewModel(application)
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
+    val firstRowPreview: StateFlow<String?> = repository.firstRowPreview
+
     init {
         // Initialize with default demo data on first-ever launch if no config exists
         viewModelScope.launch {
@@ -167,6 +169,10 @@ class PaymentViewModel(application: Application) : AndroidViewModel(application)
         _errorMessage.value = null
     }
 
+    fun clearFirstRowPreview() {
+        repository.clearFirstRowPreview()
+    }
+
     // PIN lock-unlock action
     fun verifyPin(pin: String, configPin: String): Boolean {
         return if (pin == configPin) {
@@ -185,12 +191,11 @@ class PaymentViewModel(application: Application) : AndroidViewModel(application)
     }
 
     /**
-     * Set up and map a new Spreadsheet
-     */
-    /**
      * Map spreadsheet URL, extract key ID, save config, and run first sync.
+     * The sheet name is always "Service Ledger" — no API key needed, sync uses the
+     * public GViz/export endpoints, which only require "Anyone with the link" sharing.
      */
-    fun mapSpreadsheet(url: String, sheetName: String, pin: String) {
+    fun mapSpreadsheet(url: String, pin: String) {
         viewModelScope.launch {
             _isRefreshing.value = true
             _syncProgress.value = 0f
@@ -209,7 +214,7 @@ class PaymentViewModel(application: Application) : AndroidViewModel(application)
             val newConfig = SheetConfig(
                 spreadsheetUrl = url,
                 spreadsheetId = sheetId,
-                sheetName = sheetName.ifBlank { "Services Ledger" },
+                sheetName = "Service Ledger",
                 ownerPin = pin,
                 isVerified = true,
                 useLocalDemo = false,
@@ -351,6 +356,27 @@ class PaymentViewModel(application: Application) : AndroidViewModel(application)
     }
 
     /**
+     * Download worksheet directly from an online URL (CSV, TSV, XLSX, or Google Sheet direct URL)
+     * Downloads file locally to phone storage and imports into "Service Ledger"
+     */
+    fun downloadWorksheetFromUrl(onlineUrl: String) {
+        viewModelScope.launch {
+            _isRefreshing.value = true
+            clearStatus()
+            val context = getApplication<Application>().applicationContext
+            val result = repository.downloadWorksheetFromUrl(onlineUrl, context, "Service Ledger")
+            if (result.isSuccess) {
+                _isUnlocked.value = true
+                val savePath = result.getOrNull() ?: "Downloads folder"
+                _statusMessage.value = "Successfully downloaded 'Service Ledger' locally to phone storage ($savePath) and imported into your app!"
+            } else {
+                _errorMessage.value = "Download failed: ${result.exceptionOrNull()?.message}"
+            }
+            _isRefreshing.value = false
+        }
+    }
+
+    /**
      * Import a local spreadsheet file (.tsv/.csv/.xlsx) as the source of truth
      */
     fun importLocalFile(fileName: String, fileBytes: ByteArray) {
@@ -444,7 +470,7 @@ fun parseAndFormatDate(dateStr: String): String {
     // Try Textual months
     val months = listOf("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
     val fullMonths = listOf("january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december")
-    
+
     val lower = datePart.lowercase()
     var foundMonthIdx = -1
     for (i in months.indices) {

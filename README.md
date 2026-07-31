@@ -1,21 +1,54 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# SheeGlam — Salon Payment & Commission Manager
 
-# Run and deploy your AI Studio app
+**SheeGlam** is a modern Android application built for salon and beauty professionals to easily track employee payments, service ledgers, commissions, and revenue analytics. It seamlessly synchronizes data directly from a Google Sheet (such as a Google Form Service Ledger) without requiring complex backend setups or API credentials.
 
-This contains everything you need to run your app locally.
+---
 
-View your app in AI Studio: https://ai.studio/apps/e5006ff8-8822-4cdd-ab65-5c461d1d6be6
+## ✨ Key Features
 
-## Run Locally
+* 📊 **Google Sheets Sync (No API Key Required)**: Easily sync service records directly from your Google Sheet using standard public read permissions ("Anyone with the link can view").
+* 💰 **Commission & Dues Tracking**: Automatically calculates total earnings, commissions earned, and outstanding amounts owed to each team member ("Handled By").
+* 📈 **Revenue & Analytics Dashboard**: Visual breakdown of total salon revenue, total paid out, pending dues, and staff performance metrics.
+* 💳 **Payment Status Management**: Mark payments as completed or pending, with local history tracking to manage staff payouts accurately.
+* 📱 **Offline Access & Room Persistence**: Built-in local SQLite database (via Android Room) allows viewing history, reports, and staff ledgers offline.
+* 🎨 **Material 3 UI**: Clean, intuitive visual design built with Jetpack Compose, supporting dark and light themes.
 
-**Prerequisites:**  [Android Studio](https://developer.android.com/studio)
+---
 
+## 🚀 How to Set Up Your Google Sheet
 
-1. Open Android Studio
-2. Select **Open** and choose the directory containing this project
-3. Allow Android Studio to fix any incompatibilities as it imports the project.
-4. Create a file named `.env` in the project directory and set `GEMINI_API_KEY` in that file to your Gemini API key (see `.env.example` for an example)
-5. Remove this line from the app's `build.gradle.kts` file: `signingConfig = signingConfigs.getByName("debugConfig")`
-6. Run the app on an emulator or physical device
+SheeGlam connects to your Google Sheet's **Service Ledger** tab to fetch transaction details. Follow these quick steps to connect your sheet:
+
+1. **Prepare Your Google Sheet**:
+   * Ensure your sheet contains a worksheet/tab named **Service Ledger** (or connected to your salon's Google Form response sheet).
+   * Ensure standard column headers are present (e.g., `Handled By`, `Amount Paid`, `Service`, `Date`, etc.).
+
+2. **Set Public Sharing Permissions**:
+   * Open your Google Sheet in a web browser.
+   * Click **Share** in the top right corner.
+   * Under *General Access*, change the permission from *Restricted* to **"Anyone with the link can view"**.
+   * Copy the share link or Sheet ID.
+
+3. **Sync in SheeGlam**:
+   * Open the **SheeGlam** Android app.
+   * Paste the Google Sheet URL into the app's sync field.
+   * Tap **Sync Now** to pull the latest transactions and update staff commissions and dues.
+
+---
+
+## 🛠️ Technical Stack
+
+* **Language**: Kotlin
+* **UI Framework**: Jetpack Compose with Material Design 3 (M3)
+* **Architecture**: MVVM (Model-View-ViewModel) pattern
+* **Data Persistence**: Room Database for offline storage & state synchronization
+* **Networking**: OkHttpClient for resilient multi-method CSV/TSV data fetching
+* **Asynchrony**: Kotlin Coroutines & StateFlow for reactive UI updates
+
+---
+
+## 🔒 Privacy & Data Flow
+
+* **No Credentials Stored**: The app requires **no Google API keys, passwords, or OAuth tokens**.
+* **Direct Connection**: All data is fetched directly from your shared Google Sheet URL to your device.
+* **Local Storage**: Transaction records and payment updates are persisted locally on your Android device using Room DB.

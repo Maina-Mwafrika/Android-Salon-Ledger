@@ -7,7 +7,7 @@ import androidx.room.PrimaryKey
 data class PaymentRow(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val spreadsheetId: String,
-    val rowIndex: Int, // The exact row number in Google Sheets (1-indexed or 0-indexed)
+    val rowIndex: Int,
     val timestamp: String,
     val name: String,
     val section: String,
@@ -18,7 +18,7 @@ data class PaymentRow(
     val staffCommission: Double = 0.0,
     val salonShare: Double = 0.0,
     val notes: String,
-    val paid: Boolean, // True = Paid, False = Unpaid
+    val paid: Boolean,
     val month: String = ""
 )
 
@@ -27,8 +27,8 @@ data class SheetConfig(
     @PrimaryKey val id: String = "active_config",
     val spreadsheetUrl: String,
     val spreadsheetId: String,
-    val sheetName: String = "Services Ledger",
-    val ownerPin: String, // Verification pin set by the user to authorize edits
+    val sheetName: String = "Service Ledger",
+    val ownerPin: String,
     val isVerified: Boolean = false,
     val useLocalDemo: Boolean = true,
     val lastSyncTime: Long = 0L

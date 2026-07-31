@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Help
@@ -66,6 +67,7 @@ fun PaymentAppScreen(viewModel: PaymentViewModel) {
     val syncError by viewModel.syncError.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
     val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
+    val firstRowPreview by viewModel.firstRowPreview.collectAsStateWithLifecycle()
     val isUnlocked by viewModel.isUnlocked.collectAsStateWithLifecycle()
     val config = (uiState as? PaymentUiState.Success)?.config
 
@@ -278,14 +280,14 @@ fun PaymentAppScreen(viewModel: PaymentViewModel) {
                             Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(16.dp),
+                                    .padding(horizontal = 16.dp, vertical = 6.dp),
                                 colors = CardDefaults.cardColors(
                                     containerColor = MaterialTheme.colorScheme.errorContainer
                                 ),
-                                shape = RoundedCornerShape(8.dp),
+                                shape = RoundedCornerShape(12.dp),
                                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.error)
                             ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
+                                Column(modifier = Modifier.padding(14.dp)) {
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -293,7 +295,8 @@ fun PaymentAppScreen(viewModel: PaymentViewModel) {
                                     ) {
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            modifier = Modifier.weight(1f)
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Default.Warning,
@@ -309,24 +312,72 @@ fun PaymentAppScreen(viewModel: PaymentViewModel) {
                                         }
                                         IconButton(
                                             onClick = { viewModel.clearSyncError() },
-                                            modifier = Modifier.size(24.dp)
+                                            modifier = Modifier
+                                                .size(32.dp)
+                                                .testTag("close_sync_error_button")
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Default.Close,
                                                 contentDescription = "Dismiss",
                                                 tint = MaterialTheme.colorScheme.onErrorContainer,
-                                                modifier = Modifier.size(16.dp)
+                                                modifier = Modifier.size(20.dp)
                                             )
                                         }
                                     }
                                     Spacer(modifier = Modifier.height(8.dp))
-                                    Text(
-                                        text = err,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onErrorContainer
-                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(max = 200.dp)
+                                            .background(
+                                                color = MaterialTheme.colorScheme.surface,
+                                                shape = RoundedCornerShape(8.dp)
+                                            )
+                                            .border(
+                                                width = 1.dp,
+                                                color = MaterialTheme.colorScheme.error.copy(alpha = 0.3f),
+                                                shape = RoundedCornerShape(8.dp)
+                                            )
+                                            .padding(10.dp)
+                                            .verticalScroll(rememberScrollState())
+                                    ) {
+                                        SelectionContainer {
+                                            Text(
+                                                text = err,
+                                                style = androidx.compose.ui.text.TextStyle(
+                                                    fontFamily = FontFamily.Monospace,
+                                                    fontSize = 12.sp,
+                                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                                )
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    OutlinedButton(
+                                        onClick = { viewModel.clearSyncError() },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(38.dp)
+                                            .testTag("dismiss_sync_error_button"),
+                                        colors = ButtonDefaults.outlinedButtonColors(
+                                            contentColor = MaterialTheme.colorScheme.onErrorContainer
+                                        ),
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.5f)),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Close / Dismiss Notice", style = MaterialTheme.typography.labelMedium)
+                                    }
                                 }
                             }
+                        }
+
+                        firstRowPreview?.let { preview ->
+                            FirstRowPreviewNotificationCard(
+                                previewText = preview,
+                                onDismiss = { viewModel.clearFirstRowPreview() }
+                            )
                         }
 
                         // Connection Status Banner
@@ -503,7 +554,7 @@ fun EmployeesListTab(
             )
         }
 
-        // Quick Totals Grid of 2 Metric Cards (High Density Styling)
+        // Quick Totals Grid of 2 Metric Cards
         val totalPaidToAll by viewModel.totalPaidToAll.collectAsStateWithLifecycle()
         val allPayments by viewModel.allPayments.collectAsStateWithLifecycle()
         val totalOutstanding = remember(allPayments) {
@@ -558,7 +609,7 @@ fun EmployeesListTab(
                 .padding(vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Card 1: Total Disbursed (Total Revenue / Total Paid to All)
+            // Card 1: Total Disbursed
             Card(
                 modifier = Modifier.weight(1f),
                 colors = CardDefaults.cardColors(
@@ -784,11 +835,13 @@ fun EmployeesListTab(
     selectedEmployeeForPaymentConfirm?.let { name ->
         val unpaidDuesList = unpaidDuesMap[name] ?: emptyList()
         val totalUnpaidAmt = unpaidDuesList.sumOf { it.staffCommission }
+        val unpaidRange = unpaidRangeMap[name] ?: "No outstanding dues"
 
         ConfirmPaymentDialog(
             employeeName = name,
             totalAmount = totalUnpaidAmt,
             itemCount = unpaidDuesList.size,
+            periodRange = unpaidRange,
             isUnlocked = isUnlocked,
             onConfirm = { pin ->
                 if (isUnlocked || viewModel.verifyPin(pin, state.config?.ownerPin ?: "")) {
@@ -807,6 +860,7 @@ fun EmployeesListTab(
             totalAmount = payment.staffCommission,
             itemCount = 1,
             serviceName = payment.serviceName,
+            periodRange = payment.timestamp,
             isUnlocked = isUnlocked,
             onConfirm = { pin ->
                 if (isUnlocked || viewModel.verifyPin(pin, state.config?.ownerPin ?: "")) {
@@ -1067,7 +1121,7 @@ fun EmployeeItemCard(
                     }
                 }
 
-                // Expanded detail row showing list of individual transactions
+                // Expanded detail row
                 AnimatedVisibility(
                     visible = isExpanded,
                     enter = expandVertically() + fadeIn(),
@@ -1165,12 +1219,14 @@ fun LedgerItemRow(
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                     )
                 }
+                val formattedDate = remember(row.timestamp) { parseAndFormatDate(row.timestamp) }
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = row.timestamp,
+                    text = if (formattedDate != row.timestamp && formattedDate != "Unknown") "Date: $formattedDate (${row.timestamp})" else "Date: ${row.timestamp}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.outline,
-                    fontSize = 10.sp
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium
                 )
             }
 
@@ -1407,7 +1463,7 @@ fun InsightsTab(viewModel: PaymentViewModel) {
             )
         }
 
-        // Section Revenue Visualization (Donut Chart)
+        // Section Revenue Visualization
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -1444,7 +1500,6 @@ fun InsightsTab(viewModel: PaymentViewModel) {
                             .height(200.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Custom Drawn Donut Pie Chart Canvas
                         RevenueDonutChart(
                             data = activeRevenueBySection,
                             modifier = Modifier
@@ -1454,7 +1509,6 @@ fun InsightsTab(viewModel: PaymentViewModel) {
 
                         Spacer(modifier = Modifier.width(12.dp))
 
-                        // Custom Chart Legend
                         Column(
                             modifier = Modifier
                                 .weight(1f)
@@ -1498,7 +1552,7 @@ fun InsightsTab(viewModel: PaymentViewModel) {
             }
         }
 
-        // Service Revenue Visualization (Bar Chart)
+        // Service Revenue Visualization
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -1571,7 +1625,6 @@ fun InsightsTab(viewModel: PaymentViewModel) {
                             Text(text = "${formatKES(amount)} ($percentage%)", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                         }
                         Spacer(modifier = Modifier.height(6.dp))
-                        // Progress Bar
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1613,7 +1666,7 @@ fun InsightsTab(viewModel: PaymentViewModel) {
                     modifier = Modifier.padding(bottom = 16.dp)
                 )
 
-                // Table Header (Interactive Sorting)
+                // Table Header
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1732,7 +1785,6 @@ fun InsightsTab(viewModel: PaymentViewModel) {
                             textAlign = TextAlign.End,
                             color = if (unpaid > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outline
                         )
-                        // Percentage Badge
                         Box(
                             modifier = Modifier
                                 .weight(0.9f),
@@ -1814,12 +1866,12 @@ fun InfoSummaryCard(
 
 // Custom Colors for visual charts
 val chartColors = listOf(
-    Color(0xFF0D9488), // Teal
-    Color(0xFFF59E0B), // Amber
-    Color(0xFFE11D48), // Rose Red
-    Color(0xFF3B82F6), // Blue
-    Color(0xFF8B5CF6), // Purple
-    Color(0xFF10B981)  // Emerald
+    Color(0xFFD7205C), // Hot Pink
+    Color(0xFFE9B747), // Metallic Gold
+    Color(0xFFF26894), // Light Pink
+    Color(0xFFB4791B), // Rich Gold
+    Color(0xFF7E3420), // Dark Bronze
+    Color(0xFFF2C3B1)  // Warm Beige
 )
 
 @Composable
@@ -1908,7 +1960,6 @@ fun RevenueBarChart(
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // Custom Rounded Gradient Bar
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1937,7 +1988,7 @@ fun RevenueBarChart(
 }
 
 // ------------------------------------------------------------------------------------
-// TAB 3: SETTINGS & SPREADSHEET MAPPING
+// TAB 3: SETTINGS & SPREADSHEET MAPPING (UPDATED - NO API KEY)
 // ------------------------------------------------------------------------------------
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1947,8 +1998,9 @@ fun SettingsTab(
     isUnlocked: Boolean
 ) {
     var sheetUrl by remember { mutableStateOf(state.config?.spreadsheetUrl ?: "") }
-    var sheetName by remember { mutableStateOf(state.config?.sheetName ?: "Payment Form Import") }
+    var sheetName by remember { mutableStateOf(state.config?.sheetName.takeIf { !it.isNullOrBlank() } ?: "Service Ledger") }
     var webhookUrlInput by remember { mutableStateOf(viewModel.webhookUrl.value) }
+    var onlineDownloadUrl by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
     var confirmPin by remember { mutableStateOf("") }
 
@@ -1957,6 +2009,7 @@ fun SettingsTab(
     var showClearLedgerPinConfirm by remember { mutableStateOf(false) }
 
     val scrollState = rememberScrollState()
+    val firstRowPreview by viewModel.firstRowPreview.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -1989,6 +2042,42 @@ fun SettingsTab(
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onBackground
         )
+
+        // Info Card - No API Key Required!
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+            ),
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+        ) {
+            Row(
+                modifier = Modifier.padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Info,
+                    contentDescription = "Info",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(24.dp)
+                )
+                Column {
+                    Text(
+                        text = "✅ No API Key Required!",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "Just make your Google Sheet public (Anyone with the link can view) and paste the URL below.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
 
         // Lock / Unlock Verification Section
         Card(
@@ -2082,7 +2171,14 @@ fun SettingsTab(
             }
         }
 
-        // Mapping Form Panel (Editable only if Unlocked or first installation)
+        firstRowPreview?.let { preview ->
+            FirstRowPreviewNotificationCard(
+                previewText = preview,
+                onDismiss = { viewModel.clearFirstRowPreview() }
+            )
+        }
+
+        // Mapping Form Panel
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -2123,7 +2219,7 @@ fun SettingsTab(
                     value = sheetName,
                     onValueChange = { sheetName = it },
                     label = { Text("Sheet Name") },
-                    placeholder = { Text("Payment Form Import") },
+                    placeholder = { Text("Service Ledger") },
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("sheet_name_input"),
@@ -2182,7 +2278,7 @@ fun SettingsTab(
                             return@Button
                         }
                         val savePin = if (pin.isNotBlank()) pin else (state.config?.ownerPin ?: "1234")
-                        viewModel.mapSpreadsheet(sheetUrl, sheetName, savePin)
+                        viewModel.mapSpreadsheet(sheetUrl, savePin)
                         pin = ""
                         confirmPin = ""
                     },
@@ -2244,6 +2340,79 @@ fun SettingsTab(
                     showClearLedgerPinConfirm = false
                 }
             )
+        }
+
+        // Download worksheet from direct online URL card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(16.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CloudDownload,
+                        contentDescription = "Download Online Icon",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Text(
+                        text = "Download Worksheet from Online URL",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                Text(
+                    text = "Provide an online URL to download the 'Service Ledger' worksheet directly to your phone's storage and import all records into your app (supports Google Sheets links, public CSV/TSV web links, or raw .xlsx file URLs).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+
+                OutlinedTextField(
+                    value = onlineDownloadUrl,
+                    onValueChange = { onlineDownloadUrl = it },
+                    label = { Text("Direct Online Worksheet URL") },
+                    placeholder = { Text("https://docs.google.com/... or https://example.com/sheet.csv") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("online_download_url_input"),
+                    shape = RoundedCornerShape(10.dp),
+                    maxLines = 2,
+                    enabled = isUnlocked || state.config == null
+                )
+
+                Button(
+                    onClick = {
+                        if (onlineDownloadUrl.isNotBlank()) {
+                            viewModel.downloadWorksheetFromUrl(onlineDownloadUrl)
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag("download_online_url_button"),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ),
+                    enabled = (isUnlocked || state.config == null) && onlineDownloadUrl.isNotBlank()
+                ) {
+                    Icon(Icons.Default.CloudDownload, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Download 'Service Ledger' to Phone & Import", fontWeight = FontWeight.Bold)
+                }
+            }
         }
 
         // Upload spreadsheet local file card
@@ -2324,6 +2493,7 @@ fun ConfirmPaymentDialog(
     totalAmount: Double,
     itemCount: Int,
     serviceName: String? = null,
+    periodRange: String? = null,
     isUnlocked: Boolean,
     onConfirm: (pin: String) -> Unit,
     onDismiss: () -> Unit
@@ -2373,6 +2543,35 @@ fun ConfirmPaymentDialog(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.8f)
                 )
+
+                if (periodRange != null && periodRange.isNotBlank()) {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.DateRange,
+                                contentDescription = "Period",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "Period/Date: $periodRange",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
 
                 if (!isUnlocked) {
                     Spacer(modifier = Modifier.height(6.dp))
@@ -2567,7 +2766,6 @@ fun ConfirmClearLedgerDialog(
 // Helper: Format double values to Kenyan Shillings (KES)
 fun formatKES(amount: Double): String {
     val formatter = NumberFormat.getCurrencyInstance(Locale.forLanguageTag("en-KE"))
-    // Fallback if currency symbol is not formatted perfectly as KES
     val formatted = formatter.format(amount)
     return if (formatted.contains("KES") || formatted.contains("Ksh")) {
         formatted
@@ -2628,3 +2826,110 @@ fun parseTimestampToMillis(timestamp: String): Long {
     return 0L
 }
 
+@Composable
+fun FirstRowPreviewNotificationCard(
+    previewText: String,
+    onDismiss: (() -> Unit)? = null
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        ),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = "First Row Preview",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "First Row Data Read (Spreadsheet Inspection)",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (onDismiss != null) {
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier
+                            .size(32.dp)
+                            .testTag("close_preview_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Dismiss",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = "Raw text extracted from the first row(s) of your spreadsheet:",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 80.dp, max = 220.dp)
+                    .background(
+                        color = MaterialTheme.colorScheme.surface,
+                        shape = RoundedCornerShape(8.dp)
+                    )
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                        shape = RoundedCornerShape(8.dp)
+                    )
+                    .padding(10.dp)
+                    .verticalScroll(rememberScrollState())
+                    .horizontalScroll(rememberScrollState())
+            ) {
+                SelectionContainer {
+                    Text(
+                        text = previewText,
+                        style = androidx.compose.ui.text.TextStyle(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    )
+                }
+            }
+            if (onDismiss != null) {
+                Spacer(modifier = Modifier.height(10.dp))
+                OutlinedButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(38.dp)
+                        .testTag("dismiss_preview_button"),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Close / Dismiss Inspection Box", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
+    }
+}
