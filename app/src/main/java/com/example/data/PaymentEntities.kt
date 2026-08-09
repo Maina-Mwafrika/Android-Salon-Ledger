@@ -33,3 +33,15 @@ data class SheetConfig(
     val useLocalDemo: Boolean = true,
     val lastSyncTime: Long = 0L
 )
+
+@Entity(tableName = "paid_records_cache")
+data class PaidRecordCache(
+    @PrimaryKey val recordKey: String,
+    val spreadsheetId: String = "",
+    val rowIndex: Int = 0,
+    val name: String = "",
+    val amountPaid: Double = 0.0,
+    val serviceName: String = "",
+    val timestamp: String = "",
+    val paidAt: Long = System.currentTimeMillis()
+)

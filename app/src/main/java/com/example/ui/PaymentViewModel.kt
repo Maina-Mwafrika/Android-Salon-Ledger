@@ -147,7 +147,6 @@ class PaymentViewModel(application: Application) : AndroidViewModel(application)
             .mapValues { (_, rows) -> rows.sumOf { it.amountPaid } }
             .toList()
             .sortedByDescending { it.second }
-            .take(6) // Top 6 services to keep chart tidy
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // --- Intentional Actions & Logic ---
@@ -350,6 +349,21 @@ class PaymentViewModel(application: Application) : AndroidViewModel(application)
                 if (error != null) {
                     _errorMessage.value = "Google Sheet sync error: $error"
                 }
+            }
+            _isRefreshing.value = false
+        }
+    }
+
+    /**
+     * Mark a single specific row as Unpaid
+     */
+    fun markRowAsUnpaid(payment: PaymentRow) {
+        viewModelScope.launch {
+            _isRefreshing.value = true
+            clearStatus()
+            val result = repository.markRowAsUnpaid(payment)
+            if (result.isSuccess) {
+                _statusMessage.value = "Payment for ${payment.name} (${payment.serviceName}) marked as Unpaid!"
             }
             _isRefreshing.value = false
         }

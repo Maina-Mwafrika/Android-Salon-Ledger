@@ -40,11 +40,39 @@ class PaymentRepository(private val paymentDao: PaymentDao) {
     private val _firstRowPreview = MutableStateFlow<String?>(null)
     val firstRowPreview: StateFlow<String?> = _firstRowPreview.asStateFlow()
 
-    // The GID for the "Service Ledger" worksheet
-    private val SERVICE_LEDGER_GID = 155371327
+    // The GID for the "Service Ledger" worksheet (207825371) and "Expenses" worksheet (1292264559)
+    val SERVICE_LEDGER_GID = 207825371
+    val EXPENSES_GID = 1292264559
 
     fun clearFirstRowPreview() {
         _firstRowPreview.value = null
+    }
+
+    fun generatePaidCacheKeys(
+        spreadsheetId: String,
+        rowIndex: Int,
+        name: String,
+        amountPaid: Double,
+        serviceName: String,
+        timestamp: String
+    ): List<String> {
+        val nameClean = name.trim().lowercase()
+        val serviceClean = serviceName.trim().lowercase()
+        val timeClean = timestamp.trim().lowercase()
+
+        return listOf(
+            "${spreadsheetId}_row_${rowIndex}",
+            "${spreadsheetId}_${timeClean}_${nameClean}_${serviceClean}_${amountPaid}"
+        )
+    }
+
+    private suspend fun seedAndFetchPaidCache(): Set<String> {
+        try {
+            return paymentDao.getAllPaidCache().map { it.recordKey }.toSet()
+        } catch (e: Exception) {
+            Log.e("PaymentRepository", "Error fetching paid cache", e)
+            return emptySet()
+        }
     }
 
     fun formatFirstRowsPreview(sheetData: List<List<String>>, limit: Int = 3): String {
@@ -69,22 +97,40 @@ class PaymentRepository(private val paymentDao: PaymentDao) {
 
     fun normalizeEmployeeName(rawName: String): String {
         val trimmed = rawName.trim()
-        if (trimmed.isEmpty()) return "Unknown"
-        val firstWord = trimmed.split(Regex("[\\s.,/_-]+")).firstOrNull { it.isNotBlank() } ?: trimmed
+        if (trimmed.isEmpty()) return ""
 
-        var normalized = firstWord.lowercase().replaceFirstChar {
+        val lower = trimmed.lowercase()
+
+        // 1. Omit employee names that are "0", "o", "0.0", "none", "null", "unknown"
+        if (lower == "0" || lower == "o" || lower == "0.0" || lower == "none" || lower == "null" || lower == "unknown") {
+            return ""
+        }
+
+        // 2. Mark Bornventure and bonventure as the same -> "Bonventure"
+        if (lower.contains("bornventure") || lower.contains("bonventure") || lower.contains("bonaventure") || lower.contains("born venture")) {
+            return "Bonventure"
+        }
+
+        // 3. Peter Ngigi as Galaxy
+        if (lower.contains("peter ngigi") || lower.contains("galaxy") || lower == "peter") {
+            return "Galaxy"
+        }
+
+        // 4. Smiles as Virginiah
+        if (lower.contains("smiles") || lower.contains("virginiah") || lower.contains("virginia")) {
+            return "Virginiah"
+        }
+
+        // 5. Susan Ngigi as Susanne and the other iterations
+        if (lower.contains("susan ngigi") || lower.contains("susanne") || lower.contains("suzzy") ||
+            lower.contains("suzy") || lower.contains("suzi") || lower.contains("susie") || lower.contains("susan")) {
+            return "Susanne"
+        }
+
+        val firstWord = trimmed.split(Regex("[\\s.,/_-]+")).firstOrNull { it.isNotBlank() } ?: trimmed
+        return firstWord.lowercase().replaceFirstChar {
             if (it.isLowerCase()) it.titlecase(java.util.Locale.getDefault()) else it.toString()
         }
-
-        when (normalized.lowercase()) {
-            "suzzy", "suzy", "suzi", "susie" -> normalized = "Susan"
-            "jane" -> normalized = "Jane"
-            "mary" -> normalized = "Mary"
-            "john" -> normalized = "John"
-            "grace" -> normalized = "Grace"
-        }
-
-        return normalized
     }
 
     suspend fun resetToDemoData() {
@@ -509,7 +555,8 @@ class PaymentRepository(private val paymentDao: PaymentDao) {
                 lastSyncTime = System.currentTimeMillis()
             )
 
-            val parsedRows = parseDataRows(parsedSheetData, headerResult, fileSpreadsheetId)
+            val cachedPaidKeys = seedAndFetchPaidCache()
+            val parsedRows = parseDataRows(parsedSheetData, headerResult, fileSpreadsheetId, cachedPaidKeys)
 
             if (parsedRows.isEmpty()) {
                 val errorMsg = "No valid data rows could be parsed. " +
@@ -540,359 +587,230 @@ class PaymentRepository(private val paymentDao: PaymentDao) {
      * No Google Sheets API key is required - works with "Anyone with the link" sharing.
      */
     suspend fun refreshSheetData(
-        onProgress: (milestone: String, progress: Float) -> Unit = { _, _ -> }
-    ): Result<Unit> = withContext(Dispatchers.IO) {
-        val config = paymentDao.getActiveConfig() ?: return@withContext Result.failure(Exception("No configuration set up"))
+    onProgress: (milestone: String, progress: Float) -> Unit = { _, _ -> }
+): Result<Unit> = withContext(Dispatchers.IO) {
+    val config = paymentDao.getActiveConfig() ?: return@withContext Result.failure(Exception("No configuration set up"))
 
-        if (config.useLocalDemo && config.spreadsheetId == "demo_spreadsheet") {
-            onProgress("Using local demo data...", 0.1f)
-            kotlinx.coroutines.delay(250)
-            onProgress("Data loaded successfully", 1.0f)
-            return@withContext Result.success(Unit)
-        }
+    if (config.useLocalDemo && config.spreadsheetId == "demo_spreadsheet") {
+        onProgress("Using local demo data...", 0.1f)
+        kotlinx.coroutines.delay(250)
+        onProgress("Data loaded successfully", 1.0f)
+        return@withContext Result.success(Unit)
+    }
 
-        val spreadsheetId = config.spreadsheetId
-        val sheetName = "Service Ledger"
-        
-        if (spreadsheetId.isBlank() || spreadsheetId == "demo_spreadsheet") {
-            return@withContext Result.failure(Exception("Invalid spreadsheet ID. Please check your configuration."))
-        }
+    val spreadsheetId = config.spreadsheetId
 
-        var parsedSheetData: List<List<String>>? = null
-        var fetchErrorDetail = ""
-        var successfulMethod = ""
+    if (spreadsheetId.isBlank() || spreadsheetId == "demo_spreadsheet") {
+        return@withContext Result.failure(Exception("Invalid spreadsheet ID. Please check your configuration."))
+    }
 
-        onProgress("Connecting to spreadsheet...", 0.1f)
+    var parsedSheetData: List<List<String>>? = null
+    var fetchErrorDetail = ""
+    var successfulMethod = ""
 
-        // --- STEP 1: Export using the hardcoded GID (Most Reliable) ---
-        onProgress("Exporting 'Service Ledger' worksheet using GID: $SERVICE_LEDGER_GID...", 0.2f)
-        
+    onProgress("Connecting to spreadsheet...", 0.1f)
+    onProgress("Fetching worksheet at GID $SERVICE_LEDGER_GID...", 0.2f)
+
+    // --- Fetch explicitly by the known GID. This GID is treated as authoritative:
+    //     we don't cross-check it against header heuristics or fall back to a
+    //     name-based lookup. We only try multiple URL *forms* of the same GID,
+    //     since Google occasionally blocks one endpoint (e.g. export) while the
+    //     gviz endpoint still works, or vice versa. ---
+    val gidUrls = listOf(
+        "https://docs.google.com/spreadsheets/d/$spreadsheetId/export?format=csv&gid=$SERVICE_LEDGER_GID",
+        "https://docs.google.com/spreadsheets/d/$spreadsheetId/gviz/tq?tqx=out:csv&gid=$SERVICE_LEDGER_GID",
+        "https://docs.google.com/spreadsheets/d/$spreadsheetId/export?gid=$SERVICE_LEDGER_GID&format=csv"
+    )
+
+    for (url in gidUrls) {
+        Log.d("PaymentRepository", "Fetching GID URL: $url")
         try {
-            val gidUrls = listOf(
-                "https://docs.google.com/spreadsheets/d/$spreadsheetId/export?format=csv&gid=$SERVICE_LEDGER_GID",
-                "https://docs.google.com/spreadsheets/d/$spreadsheetId/gviz/tq?tqx=out:csv&gid=$SERVICE_LEDGER_GID",
-                "https://docs.google.com/spreadsheets/d/$spreadsheetId/export?gid=$SERVICE_LEDGER_GID&format=csv"
-            )
-            
-            for (url in gidUrls) {
-                Log.d("PaymentRepository", "Trying GID URL: $url")
-                try {
-                    val request = Request.Builder()
-                        .url(url)
-                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                        .build()
-                        
-                    client.newCall(request).execute().use { response ->
-                        if (response.isSuccessful) {
-                            val content = response.body?.string() ?: ""
-                            if (content.isNotBlank() && !content.startsWith("<") && !content.contains("<!DOCTYPE html")) {
-                                val lines = content.split("\n").map { it.trim() }
-                                if (lines.any { it.isNotEmpty() }) {
-                                    parsedSheetData = lines.map { line ->
-                                        if (line.isNotEmpty()) parseCsvLine(line, ",") else emptyList()
-                                    }
-                                    successfulMethod = "CSV Export (by GID: $SERVICE_LEDGER_GID)"
-                                    onProgress("Data retrieved from 'Service Ledger'", 0.5f)
-                                    Log.d("PaymentRepository", "Successfully retrieved ${parsedSheetData?.size} rows from 'Service Ledger' using GID $SERVICE_LEDGER_GID")
-                                    break
-                                }
-                            } else {
-                                fetchErrorDetail = "GID export returned HTML - sheet may be private"
-                            }
-                        } else {
-                            fetchErrorDetail = "HTTP ${response.code}: ${response.message}"
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w("PaymentRepository", "GID export attempt failed: ${e.message}")
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    fetchErrorDetail = "HTTP ${response.code}: ${response.message}"
+                    return@use
                 }
+
+                val content = response.body?.string() ?: ""
+                val trimmed = content.trim()
+
+                if (trimmed.isBlank()) {
+                    fetchErrorDetail = "GID $SERVICE_LEDGER_GID returned an empty response."
+                    return@use
+                }
+                if (trimmed.startsWith("<") || trimmed.contains("<!DOCTYPE html", ignoreCase = true) ||
+                    trimmed.contains("<html", ignoreCase = true) || trimmed.contains("Sign in", ignoreCase = true)) {
+                    fetchErrorDetail = "GID $SERVICE_LEDGER_GID returned an HTML/login page — " +
+                            "the sheet is likely not shared as 'Anyone with the link can view'."
+                    return@use
+                }
+
+                // Proper CSV parse that respects quoted newlines, instead of the old
+                // naive content.split("\n") which breaks on any multi-line cell.
+                val parsed = parseCsvContent(content)
+                if (parsed.isEmpty() || parsed.all { it.isEmpty() || it.all { c -> c.isBlank() } }) {
+                    fetchErrorDetail = "GID $SERVICE_LEDGER_GID returned no usable rows."
+                    return@use
+                }
+
+                parsedSheetData = parsed
+                successfulMethod = "CSV Export (explicit GID: $SERVICE_LEDGER_GID) via $url"
+                onProgress("Data retrieved from GID $SERVICE_LEDGER_GID", 0.5f)
+                Log.d("PaymentRepository", "Successfully retrieved ${parsed.size} rows via GID $SERVICE_LEDGER_GID")
             }
         } catch (e: Exception) {
-            Log.e("PaymentRepository", "GID export failed", e)
-            fetchErrorDetail = e.localizedMessage ?: "Unknown error"
+            Log.w("PaymentRepository", "GID fetch attempt failed: ${e.message}")
+            if (fetchErrorDetail.isBlank()) fetchErrorDetail = e.localizedMessage ?: "Unknown network error"
         }
 
-        // --- STEP 2: Fallback - Try with sheet name (in case GID didn't work) ---
-        if (parsedSheetData == null) {
-            onProgress("Trying alternative export method...", 0.3f)
-            try {
-                val encodedSheetName = java.net.URLEncoder.encode(sheetName, "UTF-8")
-                
-                val exportUrls = listOf(
-                    "https://docs.google.com/spreadsheets/d/$spreadsheetId/export?format=csv&sheet=$encodedSheetName",
-                    "https://docs.google.com/spreadsheets/d/$spreadsheetId/export?sheet=$encodedSheetName&format=csv",
-                    "https://docs.google.com/spreadsheets/d/$spreadsheetId/gviz/tq?tqx=out:csv&sheet=$encodedSheetName"
-                )
-                
-                for (url in exportUrls) {
-                    Log.d("PaymentRepository", "Trying export URL: $url")
-                    try {
-                        val request = Request.Builder()
-                            .url(url)
-                            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                            .build()
-                            
-                        client.newCall(request).execute().use { response ->
-                            if (response.isSuccessful) {
-                                val content = response.body?.string() ?: ""
-                                if (content.isNotBlank()) {
-                                    val trimmed = content.trim()
-                                    if (trimmed.startsWith("<") || trimmed.contains("<!DOCTYPE html") || 
-                                        trimmed.contains("<html") || trimmed.contains("sign in") ||
-                                        trimmed.contains("Sign in")) {
-                                        if (fetchErrorDetail.isBlank()) {
-                                            fetchErrorDetail = "Sheet appears to be private. Please change sharing to 'Anyone with the link can view'."
-                                        }
-                                    } else {
-                                        val lines = content.split("\n").map { it.trim() }
-                                        if (lines.any { it.isNotEmpty() }) {
-                                            val parsedLines = lines.map { line ->
-                                                if (line.isNotEmpty()) parseCsvLine(line, ",") else emptyList()
-                                            }
-                                            
-                                            // Verify this is actually the Service Ledger by checking headers
-                                            if (parsedLines.isNotEmpty() && parsedLines.first().any { 
-                                                normalizeHeaderCell(it).contains("handled by") || 
-                                                normalizeHeaderCell(it).contains("amount paid") ||
-                                                normalizeHeaderCell(it).contains("service") 
-                                            }) {
-                                                parsedSheetData = parsedLines
-                                                successfulMethod = "CSV Export (by name: $sheetName)"
-                                                onProgress("Data retrieved via export", 0.5f)
-                                                Log.d("PaymentRepository", "Successfully retrieved ${parsedSheetData?.size} rows from Service Ledger")
-                                                break
-                                            } else {
-                                                // Check if this is the wrong sheet
-                                                if (parsedLines.isNotEmpty() && parsedLines.first().any { 
-                                                    normalizeHeaderCell(it).contains("payment form") ||
-                                                    normalizeHeaderCell(it).contains("form") 
-                                                }) {
-                                                    fetchErrorDetail = "Found 'Payment Form Import' sheet instead of 'Service Ledger'. The GID method failed, and the name-based export is returning the wrong sheet."
-                                                    Log.w("PaymentRepository", fetchErrorDetail)
-                                                } else {
-                                                    // It might be the Service Ledger with different headers
-                                                    parsedSheetData = parsedLines
-                                                    successfulMethod = "CSV Export (auto-detected)"
-                                                    onProgress("Data retrieved via export", 0.5f)
-                                                    Log.d("PaymentRepository", "Auto-detected sheet data")
-                                                    break
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                if (fetchErrorDetail.isBlank()) {
-                                    fetchErrorDetail = "HTTP ${response.code}: ${response.message}"
-                                }
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.w("PaymentRepository", "Export attempt failed: ${e.message}")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e("PaymentRepository", "Export method failed", e)
-                if (fetchErrorDetail.isBlank()) {
-                    fetchErrorDetail = e.localizedMessage ?: "Unknown error"
-                }
+        if (parsedSheetData != null) break
+    }
+
+    val sheetData = parsedSheetData
+
+    if (sheetData == null || sheetData.isEmpty()) {
+        val errorMsg = buildString {
+            append("❌ Failed to fetch worksheet at GID $SERVICE_LEDGER_GID.\n\n")
+            append("🔑 REQUIRED: Your Google Sheet must be publicly shared (Anyone with the link can view/edit).\n\n")
+            if (fetchErrorDetail.isNotBlank()) {
+                append("📌 Error details: $fetchErrorDetail\n\n")
             }
+            append("💡 Troubleshooting:\n")
+            append("1. Confirm GID $SERVICE_LEDGER_GID is correct — open the tab in a browser and check the ?gid= value in the URL bar.\n")
+            append("2. Check that the tab is not hidden or protected.\n")
+            append("3. Ensure the workbook sharing is set to 'Anyone with the link can view'.\n")
+            append("4. Try the direct 'Download Worksheet from Online URL' option in Settings as an alternative.")
         }
+        return@withContext Result.failure(Exception(errorMsg))
+    }
 
-        // --- STEP 3: Try TSV Export (Alternative format) ---
-        if (parsedSheetData == null) {
-            onProgress("Trying TSV format...", 0.35f)
-            try {
-                val tsvUrl = "https://docs.google.com/spreadsheets/d/$spreadsheetId/gviz/tq?tqx=out:tsv&gid=$SERVICE_LEDGER_GID"
-                
-                Log.d("PaymentRepository", "Trying TSV export with GID: $tsvUrl")
-                
-                val request = Request.Builder()
-                    .url(tsvUrl)
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                    .build()
-                    
-                client.newCall(request).execute().use { response ->
-                    if (response.isSuccessful) {
-                        val content = response.body?.string() ?: ""
-                        if (content.isNotBlank() && !content.startsWith("<") && !content.contains("<!DOCTYPE html")) {
-                            val lines = content.split("\n").map { it.trim() }
-                            if (lines.any { it.isNotEmpty() }) {
-                                parsedSheetData = lines.map { line ->
-                                    if (line.isNotEmpty()) parseCsvLine(line, "\t") else emptyList()
-                                }
-                                successfulMethod = "TSV Export (by GID: $SERVICE_LEDGER_GID)"
-                                onProgress("Data retrieved via TSV", 0.5f)
-                                Log.d("PaymentRepository", "Successfully retrieved ${parsedSheetData?.size} rows via TSV")
-                            }
-                        }
-                    } else {
-                        Log.w("PaymentRepository", "TSV export failed with code ${response.code}")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w("PaymentRepository", "TSV export failed: ${e.message}")
-            }
-        }
+    onProgress("Processing data...", 0.6f)
 
-        // --- STEP 4: Try OpenSheet API (Alternative) ---
-        if (parsedSheetData == null) {
-            onProgress("Trying alternative API...", 0.4f)
-            try {
-                val encodedSheetName = java.net.URLEncoder.encode(sheetName, "UTF-8")
-                val apiUrl = "https://opensheet.elk.sh/$spreadsheetId/$encodedSheetName"
-                
-                Log.d("PaymentRepository", "Trying OpenSheet API: $apiUrl")
-                
-                val request = Request.Builder()
-                    .url(apiUrl)
-                    .header("Accept", "application/json")
-                    .build()
-                    
-                client.newCall(request).execute().use { response ->
-                    if (response.isSuccessful) {
-                        val json = response.body?.string() ?: ""
-                        if (json.isNotBlank() && json.startsWith("[")) {
-                            val jsonArray = JSONArray(json)
-                            if (jsonArray.length() > 0) {
-                                parsedSheetData = mutableListOf()
-                                val firstObj = jsonArray.getJSONObject(0)
-                                val headers = firstObj.keys().asSequence().toList()
-                                (parsedSheetData as MutableList).add(headers)
-                                
-                                for (i in 0 until jsonArray.length()) {
-                                    val obj = jsonArray.getJSONObject(i)
-                                    val row = headers.map { header ->
-                                        obj.optString(header, "")
-                                    }
-                                    (parsedSheetData as MutableList).add(row)
-                                }
-                                successfulMethod = "OpenSheet API"
-                                onProgress("Data retrieved via API", 0.5f)
-                                Log.d("PaymentRepository", "Successfully retrieved ${parsedSheetData?.size} rows via OpenSheet API")
-                            }
-                        } else {
-                            if (fetchErrorDetail.isBlank()) {
-                                fetchErrorDetail = "Invalid response from OpenSheet API"
-                            }
-                        }
-                    } else {
-                        Log.w("PaymentRepository", "OpenSheet API failed with code ${response.code}")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w("PaymentRepository", "OpenSheet API failed: ${e.message}")
-            }
-        }
+    val remotePreviewText = formatFirstRowsPreview(sheetData)
+    _firstRowPreview.value = remotePreviewText
 
-        val sheetData = parsedSheetData
+    try {
+        // No coarse pre-check here — findHeaderRow() below scans up to 100 rows and
+        // scores candidates directly, which is more reliable than a blunt "does the
+        // first row contain these substrings" gate. Since we trust the GID, let this
+        // be the single source of truth for whether the data is usable.
+        val headerResult = findHeaderRow(sheetData)
+        val headerRowIndex = headerResult.headerRowIndex
 
-        // If all methods failed
-        if (sheetData == null || sheetData.isEmpty()) {
-            val errorMsg = buildString {
-                append("❌ Failed to fetch the 'Service Ledger' worksheet.\n\n")
-                append("🔑 REQUIRED: Your Google Sheet must be publicly shared.\n\n")
-                append("📊 The app is using GID: $SERVICE_LEDGER_GID to target the 'Service Ledger' sheet.\n\n")
-                if (fetchErrorDetail.isNotBlank()) {
-                    append("📌 Error details: $fetchErrorDetail\n\n")
-                }
-                append("💡 Troubleshooting:\n")
-                append("1. Make sure the sheet is named exactly: 'Service Ledger'\n")
-                append("2. Check that the sheet is not hidden or protected\n")
-                append("3. Ensure the workbook is shared with 'Anyone with the link can view'\n")
-                append("4. Try using the direct download option in Settings instead\n")
-                append("5. Verify the GID $SERVICE_LEDGER_GID is correct for your workbook")
-            }
+        if (headerRowIndex == -1) {
+            val errorMsg = "❌ Could not find the header row in the worksheet at GID $SERVICE_LEDGER_GID.\n\n" +
+                    "Ensure your sheet has a header row with these columns:\n" +
+                    "• Date\n• Section\n• Service Done\n• Handled By\n• Amount Paid (KES)\n" +
+                    "• Payment Method\n• Commission %\n• Staff Commission\n• Salon Share\n• Paid\n• Notes\n• Month\n\n" +
+                    "First rows of data:\n$remotePreviewText"
             return@withContext Result.failure(Exception(errorMsg))
         }
 
-        // Verify we got the right sheet by checking headers
-        if (sheetData.isNotEmpty() && sheetData.first().isNotEmpty()) {
-            val headers = sheetData.first().map { normalizeHeaderCell(it) }
-            val hasHandledBy = headers.any { it.contains("handled") || it.contains("name") || it.contains("staff") }
-            val hasAmount = headers.any { it.contains("amount") || it.contains("paid") || it.contains("kes") }
-            
-            if (!hasHandledBy || !hasAmount) {
-                // This might be the wrong sheet
-                val errorMsg = buildString {
-                    append("⚠️ The data retrieved doesn't appear to be from 'Service Ledger'.\n\n")
-                    append("📊 The app may have fetched the wrong worksheet.\n\n")
-                    append("🔍 Expected headers: 'Handled By', 'Amount Paid (KES)', etc.\n")
-                    append("📌 Found headers: ${sheetData.first().joinToString(", ")}\n\n")
-                    append("💡 Make sure:\n")
-                    append("1. The GID $SERVICE_LEDGER_GID is correct for the 'Service Ledger' sheet\n")
-                    append("2. The sheet has the correct column headers\n")
-                    append("3. Try using the 'Download Worksheet from Online URL' option in Settings")
-                }
-                return@withContext Result.failure(Exception(errorMsg))
-            }
+        val missingColumns = mutableListOf<String>()
+        if (headerResult.nameIdx == -1) missingColumns.add("Handled By (or Name)")
+        if (headerResult.amountIdx == -1) missingColumns.add("Amount Paid (KES)")
+
+        if (missingColumns.isNotEmpty()) {
+            val errorMsg = "❌ Critical column headers missing at GID $SERVICE_LEDGER_GID: ${missingColumns.joinToString(", ")}.\n\n" +
+                    "Found header row at position ${headerRowIndex + 1}:\n" +
+                    "${sheetData[headerRowIndex].joinToString(" | ")}\n\n" +
+                    "Please ensure that tab has the required columns."
+            return@withContext Result.failure(Exception(errorMsg))
         }
 
-        onProgress("Processing data...", 0.6f)
-        
-        val remotePreviewText = formatFirstRowsPreview(sheetData)
-        _firstRowPreview.value = remotePreviewText
+        onProgress("Parsing rows...", 0.8f)
 
-        try {
-            val headerResult = findHeaderRow(sheetData)
-            val headerRowIndex = headerResult.headerRowIndex
-            
-            if (headerRowIndex == -1) {
-                val errorMsg = "❌ Could not find the header row in 'Service Ledger'.\n\n" +
-                        "Ensure your sheet has a header row with these columns:\n" +
-                        "• Date\n• Section\n• Service Done\n• Handled By\n• Amount Paid (KES)\n" +
-                        "• Payment Method\n• Commission %\n• Staff Commission\n• Salon Share\n• Paid\n• Notes\n• Month\n\n" +
-                        "First rows of data:\n$remotePreviewText"
-                return@withContext Result.failure(Exception(errorMsg))
-            }
+        val cachedPaidKeys = seedAndFetchPaidCache()
+        val parsedRows = parseDataRows(sheetData, headerResult, spreadsheetId, cachedPaidKeys)
 
-            val missingColumns = mutableListOf<String>()
-            if (headerResult.nameIdx == -1) missingColumns.add("Handled By (or Name)")
-            if (headerResult.amountIdx == -1) missingColumns.add("Amount Paid (KES)")
-            
-            if (missingColumns.isNotEmpty()) {
-                val errorMsg = "❌ Critical column headers missing in 'Service Ledger': ${missingColumns.joinToString(", ")}.\n\n" +
-                        "Found header row at position ${headerRowIndex + 1}:\n" +
-                        "${sheetData[headerRowIndex].joinToString(" | ")}\n\n" +
-                        "Please ensure your 'Service Ledger' sheet has the required columns."
-                return@withContext Result.failure(Exception(errorMsg))
-            }
-
-            onProgress("Parsing rows...", 0.8f)
-            
-            val parsedRows = parseDataRows(sheetData, headerResult, spreadsheetId)
-            
-            if (parsedRows.isEmpty()) {
-                val errorMsg = "❌ No valid data rows found in 'Service Ledger'.\n\n" +
-                        "First 5 rows of data:\n" +
-                        sheetData.take(5).joinToString("\n") { row -> 
-                            row.joinToString(" | ") 
-                        }
-                return@withContext Result.failure(Exception(errorMsg))
-            }
-
-            onProgress("Saving data...", 0.9f)
-
-            paymentDao.clearPaymentsForSpreadsheet(spreadsheetId)
-            paymentDao.insertPayments(parsedRows)
-
-            val updatedConfig = config.copy(
-                lastSyncTime = System.currentTimeMillis(),
-                useLocalDemo = false,
-                isVerified = true
-            )
-            paymentDao.insertConfig(updatedConfig)
-
-            onProgress("✅ Sync completed! ${parsedRows.size} rows loaded from 'Service Ledger' (via $successfulMethod)", 1.0f)
-            Log.d("PaymentRepository", "Successfully synced ${parsedRows.size} rows from 'Service Ledger' using $successfulMethod")
-            
-            return@withContext Result.success(Unit)
-            
-        } catch (e: Exception) {
-            Log.e("PaymentRepository", "Error processing spreadsheet data", e)
-            return@withContext Result.failure(Exception("Data processing failed: ${e.localizedMessage}"))
+        if (parsedRows.isEmpty()) {
+            val errorMsg = "❌ No valid data rows found at GID $SERVICE_LEDGER_GID.\n\n" +
+                    "First 5 rows of data:\n" +
+                    sheetData.take(5).joinToString("\n") { row -> row.joinToString(" | ") }
+            return@withContext Result.failure(Exception(errorMsg))
         }
+
+        onProgress("Saving data...", 0.9f)
+
+        paymentDao.clearPaymentsForSpreadsheet(spreadsheetId)
+        paymentDao.insertPayments(parsedRows)
+
+        val updatedConfig = config.copy(
+            lastSyncTime = System.currentTimeMillis(),
+            useLocalDemo = false,
+            isVerified = true
+        )
+        paymentDao.insertConfig(updatedConfig)
+
+        onProgress("✅ Sync completed! ${parsedRows.size} rows loaded (via $successfulMethod)", 1.0f)
+        Log.d("PaymentRepository", "Successfully synced ${parsedRows.size} rows using $successfulMethod")
+
+        return@withContext Result.success(Unit)
+
+    } catch (e: Exception) {
+        Log.e("PaymentRepository", "Error processing spreadsheet data", e)
+        return@withContext Result.failure(Exception("Data processing failed: ${e.localizedMessage}"))
     }
+}
+
+/**
+ * RFC4180-style CSV parser that correctly handles quoted fields containing
+ * commas, newlines, and escaped double-quotes ("" inside a quoted field).
+ * Replaces the old approach of splitting the whole response on "\n" first,
+ * which corrupted any row whose cell (e.g. Notes) contained a real newline.
+ */
+private fun parseCsvContent(content: String): List<List<String>> {
+    val rows = mutableListOf<List<String>>()
+    val currentRow = mutableListOf<String>()
+    val field = StringBuilder()
+    var inQuotes = false
+    var i = 0
+    val len = content.length
+
+    while (i < len) {
+        val c = content[i]
+        when {
+            inQuotes -> {
+                if (c == '"') {
+                    if (i + 1 < len && content[i + 1] == '"') {
+                        field.append('"')
+                        i++
+                    } else {
+                        inQuotes = false
+                    }
+                } else {
+                    field.append(c)
+                }
+            }
+            c == '"' -> inQuotes = true
+            c == ',' -> {
+                currentRow.add(field.toString().trim())
+                field.setLength(0)
+            }
+            c == '\r' -> { /* skip, \n handles the line break */ }
+            c == '\n' -> {
+                currentRow.add(field.toString().trim())
+                field.setLength(0)
+                rows.add(currentRow.toList())
+                currentRow.clear()
+            }
+            else -> field.append(c)
+        }
+        i++
+    }
+    // last field/row if content doesn't end with a newline
+    if (field.isNotEmpty() || currentRow.isNotEmpty()) {
+        currentRow.add(field.toString().trim())
+        rows.add(currentRow.toList())
+    }
+
+    return rows.filter { row -> row.any { it.isNotBlank() } || row.isEmpty() }
+}
 
     private fun findHeaderRow(sheetData: List<List<String>>): HeaderResult {
         var headerRowIndex = -1
@@ -1020,7 +938,8 @@ class PaymentRepository(private val paymentDao: PaymentDao) {
     private fun parseDataRows(
         sheetData: List<List<String>>,
         headerResult: HeaderResult,
-        spreadsheetId: String
+        spreadsheetId: String,
+        cachedPaidKeys: Set<String> = emptySet()
     ): List<PaymentRow> {
         val parsedRows = mutableListOf<PaymentRow>()
         val seenRows = mutableSetOf<String>()
@@ -1035,17 +954,17 @@ class PaymentRepository(private val paymentDao: PaymentDao) {
             } else ""
             if (rawName.isBlank()) continue
 
+            val name = normalizeEmployeeName(rawName)
+            if (name.isBlank() || name == "0" || name.equals("o", ignoreCase = true) || name.equals("0.0", ignoreCase = true)) continue
+
             val amountStr = if (headerResult.amountIdx != -1 && headerResult.amountIdx < cols.size) {
                 cols[headerResult.amountIdx].trim()
             } else ""
-            val amountPaid = cleanAndParseDouble(amountStr)
-            if (amountPaid == null || amountPaid < 0.0) continue
+            val amountPaid = cleanAndParseDouble(amountStr) ?: 0.0
 
-            val rowKey = "$rawName|$amountPaid|${rowIndex}"
+            val rowKey = "$name|$amountPaid|${rowIndex}"
             if (seenRows.contains(rowKey)) continue
             seenRows.add(rowKey)
-
-            val name = normalizeEmployeeName(rawName)
 
             val sectionRaw = if (headerResult.sectionIdx != -1 && headerResult.sectionIdx < cols.size) {
                 cols[headerResult.sectionIdx].trim()
@@ -1118,11 +1037,22 @@ class PaymentRepository(private val paymentDao: PaymentDao) {
             val paidVal = if (headerResult.paidIdx != -1 && headerResult.paidIdx < cols.size) {
                 cols[headerResult.paidIdx].trim().lowercase()
             } else ""
-            val paid = when (paidVal) {
+            val isSheetPaid = when (paidVal) {
                 "true", "1", "yes", "paid", "t", "✓", "x", "✔" -> true
                 "false", "0", "no", "unpaid", "f", "" -> false
                 else -> false
             }
+
+            val candidateKeys = generatePaidCacheKeys(
+                spreadsheetId = spreadsheetId,
+                rowIndex = rowIndex + 1,
+                name = name,
+                amountPaid = amountPaid,
+                serviceName = finalServiceName,
+                timestamp = finalTimestamp
+            )
+            val isCachedPaid = candidateKeys.any { cachedPaidKeys.contains(it) }
+            val paid = isSheetPaid || isCachedPaid
 
             val month = if (headerResult.monthIdx != -1 && headerResult.monthIdx < cols.size) {
                 cols[headerResult.monthIdx].trim()
@@ -1174,6 +1104,28 @@ class PaymentRepository(private val paymentDao: PaymentDao) {
             val updatedPayment = payment.copy(paid = true)
             paymentDao.updatePayment(updatedPayment)
 
+            // Cache paid status locally in paid_records_cache
+            val cacheKeys = generatePaidCacheKeys(
+                payment.spreadsheetId,
+                payment.rowIndex,
+                payment.name,
+                payment.amountPaid,
+                payment.serviceName,
+                payment.timestamp
+            )
+            val cacheEntries = cacheKeys.map { key ->
+                PaidRecordCache(
+                    recordKey = key,
+                    spreadsheetId = payment.spreadsheetId,
+                    rowIndex = payment.rowIndex,
+                    name = payment.name,
+                    amountPaid = payment.amountPaid,
+                    serviceName = payment.serviceName,
+                    timestamp = payment.timestamp
+                )
+            }
+            paymentDao.insertPaidCacheList(cacheEntries)
+
             if (!webhookUrl.isNullOrBlank() && payment.spreadsheetId != "demo_spreadsheet") {
                 val config = paymentDao.getActiveConfig()
                 val currentSheetName = "Service Ledger"
@@ -1208,6 +1160,29 @@ class PaymentRepository(private val paymentDao: PaymentDao) {
             return@withContext Result.success(Unit)
         } catch (e: Exception) {
             Log.e("PaymentRepository", "Error marking row as paid", e)
+            return@withContext Result.failure(e)
+        }
+    }
+
+    suspend fun markRowAsUnpaid(payment: PaymentRow): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val updatedPayment = payment.copy(paid = false)
+            paymentDao.updatePayment(updatedPayment)
+
+            val cacheKeys = generatePaidCacheKeys(
+                payment.spreadsheetId,
+                payment.rowIndex,
+                payment.name,
+                payment.amountPaid,
+                payment.serviceName,
+                payment.timestamp
+            )
+            for (key in cacheKeys) {
+                paymentDao.deletePaidCache(key)
+            }
+            return@withContext Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e("PaymentRepository", "Error marking row as unpaid", e)
             return@withContext Result.failure(e)
         }
     }

@@ -34,4 +34,22 @@ interface PaymentDao {
 
     @Query("DELETE FROM payment_rows")
     suspend fun clearAllPayments()
+
+    @Query("SELECT * FROM payment_rows WHERE paid = 1")
+    suspend fun getAllPaidPayments(): List<PaymentRow>
+
+    @Query("SELECT * FROM paid_records_cache")
+    suspend fun getAllPaidCache(): List<PaidRecordCache>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertPaidCache(cache: PaidRecordCache)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertPaidCacheList(caches: List<PaidRecordCache>)
+
+    @Query("DELETE FROM paid_records_cache WHERE recordKey = :key")
+    suspend fun deletePaidCache(key: String)
+
+    @Query("DELETE FROM paid_records_cache")
+    suspend fun clearPaidCache()
 }

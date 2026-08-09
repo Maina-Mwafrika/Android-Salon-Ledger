@@ -12,6 +12,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Help
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.*
@@ -20,8 +21,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.layout.ContentScale
+import com.example.R
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.SpanStyle
@@ -99,18 +105,27 @@ fun PaymentAppScreen(viewModel: PaymentViewModel) {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        // SG Avatar Badge
+                        // SheeGlam Logo Avatar Thumbnail Badge
                         Box(
                             modifier = Modifier
-                                .size(40.dp)
-                                .background(MaterialTheme.colorScheme.primary, CircleShape),
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    Brush.linearGradient(listOf(HotPink, RichGold)),
+                                    CircleShape
+                                )
+                                .padding(2.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = "SG",
-                                color = MaterialTheme.colorScheme.surface,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp
+                            Image(
+                                painter = painterResource(id = R.drawable.sheeglam_logo),
+                                contentDescription = "SheeGlam Logo",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clip(CircleShape)
                             )
                         }
                         Column {
@@ -135,13 +150,13 @@ fun PaymentAppScreen(viewModel: PaymentViewModel) {
                         onClick = { viewModel.syncData() },
                         modifier = Modifier
                             .testTag("sync_button")
-                            .size(36.dp)
-                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), CircleShape)
+                            .size(38.dp)
+                            .background(MaterialTheme.colorScheme.primaryContainer, CircleShape)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Sync,
                             contentDescription = "Sync",
-                            tint = if (isRefreshing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
+                            tint = if (isRefreshing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onPrimaryContainer,
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -159,8 +174,11 @@ fun PaymentAppScreen(viewModel: PaymentViewModel) {
                         },
                         modifier = Modifier
                             .testTag("auth_toggle_button")
-                            .size(36.dp)
-                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), CircleShape)
+                            .size(38.dp)
+                            .background(
+                                if (isUnlocked) SuccessGreen.copy(alpha = 0.15f) else MaterialTheme.colorScheme.errorContainer,
+                                CircleShape
+                            )
                     ) {
                         Icon(
                             imageVector = if (isUnlocked) Icons.Default.LockOpen else Icons.Default.Lock,
@@ -380,17 +398,10 @@ fun PaymentAppScreen(viewModel: PaymentViewModel) {
                             )
                         }
 
-                        // Connection Status Banner
-                        ConnectionHeader(
-                            config = state.config,
-                            isUnlocked = isUnlocked,
-                            onSync = { viewModel.syncData() }
-                        )
-
                         // Render Tab Content
                         Box(modifier = Modifier.weight(1f)) {
                             when (activeTab) {
-                                0 -> EmployeesListTab(state, viewModel, isUnlocked)
+                                0 -> EmployeesListTab(state, viewModel, isUnlocked, onNavigateToHistory = { activeTab = 1 })
                                 1 -> InsightsTab(viewModel)
                                 2 -> SettingsTab(state, viewModel, isUnlocked)
                             }
@@ -498,7 +509,8 @@ fun ConnectionHeader(
 fun EmployeesListTab(
     state: PaymentUiState.Success,
     viewModel: PaymentViewModel,
-    isUnlocked: Boolean
+    isUnlocked: Boolean,
+    onNavigateToHistory: (() -> Unit)? = null
 ) {
     val employees by viewModel.employeesList.collectAsStateWithLifecycle()
     val unpaidDuesMap by viewModel.unpaidDuesByEmployee.collectAsStateWithLifecycle()
@@ -517,316 +529,374 @@ fun EmployeesListTab(
 
     var expandedEmployeeName by remember { mutableStateOf<String?>(null) }
 
-    Column(
+    val filteredEmployees = employees.filter { employeeName ->
+        val matchesSearch = employeeName.lowercase().contains(state.searchWord.lowercase())
+        if (!matchesSearch) return@filter false
+
+        if (showPaidDuesMode) {
+            val paidList = paidDuesMap[employeeName] ?: emptyList()
+            paidList.isNotEmpty()
+        } else {
+            val unpaidList = unpaidDuesMap[employeeName] ?: emptyList()
+            unpaidList.isNotEmpty()
+        }
+    }
+
+    val totalPaidToAll by viewModel.totalPaidToAll.collectAsStateWithLifecycle()
+    // Dynamic real-time calculation of total unpaid staff commission dues
+    val totalOutstanding = remember(allPayments) {
+        allPayments.filter { !it.paid }.sumOf { it.staffCommission }
+    }
+    val pendingCount = remember(allPayments) {
+        allPayments.filter { !it.paid }.size
+    }
+
+    // Weekly comparison trend: current calendar week vs previous calendar week total earnings
+    val revenueTrendData = remember(allPayments) {
+        val parsedTimes = allPayments.map { row ->
+            row to parseTimestampToMillis(row.timestamp)
+        }
+
+        val validTimes = parsedTimes.filter { it.second > 0L }
+        if (validTimes.isEmpty()) {
+            Triple("0.0% vs last week", "neutral", Icons.AutoMirrored.Filled.TrendingUp)
+        } else {
+            val maxDataTime = validTimes.maxOf { it.second }
+            val calendar = java.util.Calendar.getInstance(java.util.TimeZone.getDefault()).apply {
+                timeInMillis = maxDataTime
+                firstDayOfWeek = java.util.Calendar.MONDAY
+            }
+
+            val currentWeekStartCal = (calendar.clone() as java.util.Calendar).apply {
+                set(java.util.Calendar.DAY_OF_WEEK, java.util.Calendar.MONDAY)
+                set(java.util.Calendar.HOUR_OF_DAY, 0)
+                set(java.util.Calendar.MINUTE, 0)
+                set(java.util.Calendar.SECOND, 0)
+                set(java.util.Calendar.MILLISECOND, 0)
+            }
+            val currentWeekStartMs = currentWeekStartCal.timeInMillis
+
+            val previousWeekStartCal = (currentWeekStartCal.clone() as java.util.Calendar).apply {
+                add(java.util.Calendar.WEEK_OF_YEAR, -1)
+            }
+            val previousWeekStartMs = previousWeekStartCal.timeInMillis
+
+            val thisWeekRevenue = parsedTimes.filter { it.second >= currentWeekStartMs }.sumOf { it.first.amountPaid }
+            val lastWeekRevenue = parsedTimes.filter { it.second in previousWeekStartMs until currentWeekStartMs }.sumOf { it.first.amountPaid }
+
+            if (lastWeekRevenue == 0.0) {
+                if (thisWeekRevenue > 0.0) {
+                    Triple("+100% vs last week", "success", Icons.AutoMirrored.Filled.TrendingUp)
+                } else {
+                    Triple("0.0% vs last week", "neutral", Icons.AutoMirrored.Filled.TrendingUp)
+                }
+            } else {
+                val diffPct = ((thisWeekRevenue - lastWeekRevenue) / lastWeekRevenue) * 100.0
+                val formattedPct = String.format(java.util.Locale.US, "%.1f", diffPct)
+                if (diffPct >= 0) {
+                    Triple("+$formattedPct% vs last week", "success", Icons.AutoMirrored.Filled.TrendingUp)
+                } else {
+                    Triple("$formattedPct% vs last week", "error", Icons.Default.TrendingDown)
+                }
+            }
+        }
+    }
+
+    val trendColor = when (revenueTrendData.second) {
+        "success" -> SuccessGreen
+        "error" -> MaterialTheme.colorScheme.error
+        else -> MaterialTheme.colorScheme.outline
+    }
+
+    LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 16.dp)
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(bottom = 32.dp)
     ) {
         // Search & Filters Row
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedTextField(
-                value = state.searchWord,
-                onValueChange = { viewModel.setSearchWord(it) },
-                placeholder = { Text("Search employees...", fontSize = 14.sp) },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
-                trailingIcon = {
-                    if (state.searchWord.isNotEmpty()) {
-                        IconButton(onClick = { viewModel.setSearchWord("") }) {
-                            Icon(Icons.Default.Clear, contentDescription = "Clear")
-                        }
-                    }
-                },
+        item {
+            Row(
                 modifier = Modifier
-                    .weight(1f)
-                    .height(52.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
-                ),
-                singleLine = true
-            )
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = state.searchWord,
+                    onValueChange = { viewModel.setSearchWord(it) },
+                    placeholder = { Text("Search employees...", fontSize = 14.sp) },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
+                    trailingIcon = {
+                        if (state.searchWord.isNotEmpty()) {
+                            IconButton(onClick = { viewModel.setSearchWord("") }) {
+                                Icon(Icons.Default.Clear, contentDescription = "Clear")
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                    ),
+                    singleLine = true
+                )
+            }
         }
 
         // Quick Totals Grid of 2 Metric Cards
-        val totalPaidToAll by viewModel.totalPaidToAll.collectAsStateWithLifecycle()
-        val allPayments by viewModel.allPayments.collectAsStateWithLifecycle()
-        val totalOutstanding = remember(allPayments) {
-            allPayments.filter { !it.paid }.sumOf { it.amountPaid }
-        }
-        val pendingCount = remember(allPayments) {
-            allPayments.filter { !it.paid }.size
-        }
-
-        val revenueTrendData = remember(allPayments) {
-            val parsedTimes = allPayments.map { row ->
-                row to parseTimestampToMillis(row.timestamp)
-            }.filter { it.second > 0L }
-
-            if (parsedTimes.isEmpty()) {
-                Triple("+0% vs last week", "success", Icons.AutoMirrored.Filled.TrendingUp)
-            } else {
-                val latestTime = parsedTimes.maxOf { it.second }
-                val oneWeekMs = 7 * 24 * 60 * 60 * 1000L
-                val thisWeekStart = latestTime - oneWeekMs
-                val lastWeekStart = latestTime - 2 * oneWeekMs
-
-                val thisWeekRevenue = parsedTimes.filter { it.second in thisWeekStart..latestTime }.sumOf { it.first.amountPaid }
-                val lastWeekRevenue = parsedTimes.filter { it.second in lastWeekStart until thisWeekStart }.sumOf { it.first.amountPaid }
-
-                if (lastWeekRevenue == 0.0) {
-                    if (thisWeekRevenue > 0.0) {
-                        Triple("+100% vs last week", "success", Icons.AutoMirrored.Filled.TrendingUp)
-                    } else {
-                        Triple("0% vs last week", "neutral", Icons.AutoMirrored.Filled.TrendingUp)
-                    }
-                } else {
-                    val diffPct = (((thisWeekRevenue - lastWeekRevenue) / lastWeekRevenue) * 100).toInt()
-                    if (diffPct >= 0) {
-                        Triple("+$diffPct% vs last week", "success", Icons.AutoMirrored.Filled.TrendingUp)
-                    } else {
-                        Triple("$diffPct% vs last week", "error", Icons.Default.TrendingDown)
-                    }
-                }
-            }
-        }
-
-        val trendColor = when (revenueTrendData.second) {
-            "success" -> SuccessGreen
-            "error" -> MaterialTheme.colorScheme.error
-            else -> MaterialTheme.colorScheme.outline
-        }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            // Card 1: Total Disbursed
-            Card(
-                modifier = Modifier.weight(1f),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
-                ),
-                shape = RoundedCornerShape(16.dp),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
-            ) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(
-                        text = "TOTAL REVENUE",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.secondary,
-                        letterSpacing = 1.sp
-                    )
-                    Text(
-                        text = formatKES(allPayments.sumOf { it.amountPaid }),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Icon(
-                            imageVector = revenueTrendData.third,
-                            contentDescription = "Trending",
-                            tint = trendColor,
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Text(
-                            text = revenueTrendData.first,
-                            fontSize = 10.sp,
-                            color = trendColor,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
-                }
-            }
-
-            // Card 2: Unpaid Dues
-            Card(
-                modifier = Modifier.weight(1f),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.error.copy(alpha = 0.1f)
-                ),
-                shape = RoundedCornerShape(16.dp),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.2f))
-            ) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(
-                        text = "UNPAID DUES",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.error,
-                        letterSpacing = 1.sp
-                    )
-                    Text(
-                        text = formatKES(totalOutstanding),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Group,
-                            contentDescription = "Pending",
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Text(
-                            text = "$pendingCount Pending",
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.error,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
-                }
-            }
-        }
-
-        // Employee List Title
-        Text(
-            text = "Employees & Payroll Details",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
-            color = MaterialTheme.colorScheme.onBackground
-        )
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            val pendingCount = allPayments.count { !it.paid }
-            val paidCount = allPayments.count { it.paid }
-
-            Button(
-                onClick = { showPaidDuesMode = false },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (!showPaidDuesMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                    contentColor = if (!showPaidDuesMode) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
-                ),
-                shape = RoundedCornerShape(12.dp),
+        item {
+            Row(
                 modifier = Modifier
-                    .weight(1f)
-                    .height(40.dp)
-                    .testTag("toggle_unpaid_dues")
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Icon(Icons.Default.Group, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Outstanding ($pendingCount)", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            }
+                // Card 1: Total Revenue (Hero Gradient Card with History Link)
+                Card(
+                    modifier = Modifier
+                        .weight(1f)
+                        .then(if (onNavigateToHistory != null) Modifier.clickable { onNavigateToHistory() } else Modifier),
+                    shape = RoundedCornerShape(16.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Brush.horizontalGradient(listOf(HotPink, RichGold)))
+                            .padding(14.dp)
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "TOTAL REVENUE",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color.White.copy(alpha = 0.9f),
+                                    letterSpacing = 1.sp
+                                )
+                                if (onNavigateToHistory != null) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                        contentDescription = "Earnings History",
+                                        tint = Color.White.copy(alpha = 0.9f),
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+                            Text(
+                                text = formatKES(allPayments.sumOf { it.amountPaid }),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Black,
+                                color = Color.White
+                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = revenueTrendData.third,
+                                    contentDescription = "Trending",
+                                    tint = IvoryCream,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Text(
+                                    text = revenueTrendData.first,
+                                    fontSize = 10.sp,
+                                    color = IvoryCream,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
 
-            Button(
-                onClick = { showPaidDuesMode = true },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (showPaidDuesMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                    contentColor = if (showPaidDuesMode) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
-                ),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .weight(1f)
-                    .height(40.dp)
-                    .testTag("toggle_paid_dues")
-            ) {
-                Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Paid Ledger ($paidCount)", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                // Card 2: Unpaid Dues Card
+                Card(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(16.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                Brush.horizontalGradient(
+                                    listOf(
+                                        Color(0xFFFF6B81),
+                                        Color(0xFFFFA07A)
+                                    )
+                                )
+                            )
+                            .padding(14.dp)
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = "UNPAID DUES",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Color.White.copy(alpha = 0.95f),
+                                letterSpacing = 1.sp
+                            )
+                            Text(
+                                text = formatKES(totalOutstanding),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Black,
+                                color = Color.White
+                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(Color.White.copy(alpha = 0.25f))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = "$pendingCount Pending",
+                                        fontSize = 10.sp,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        val filteredEmployees = employees.filter {
-            it.lowercase().contains(state.searchWord.lowercase())
+        // Employee List Title & Toggle Buttons
+        item {
+            Column {
+                Text(
+                    text = "Employees & Payroll Details",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val pendingPayCount = allPayments.count { !it.paid }
+                    val paidPayCount = allPayments.count { it.paid }
+
+                    Button(
+                        onClick = { showPaidDuesMode = false },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (!showPaidDuesMode) Color(0xFFFF6B81) else MaterialTheme.colorScheme.surfaceVariant,
+                            contentColor = if (!showPaidDuesMode) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(42.dp)
+                            .testTag("toggle_unpaid_dues")
+                    ) {
+                        Icon(Icons.Default.Group, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Outstanding ($pendingPayCount)", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    Button(
+                        onClick = { showPaidDuesMode = true },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (showPaidDuesMode) SuccessGreen else MaterialTheme.colorScheme.surfaceVariant,
+                            contentColor = if (showPaidDuesMode) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(42.dp)
+                            .testTag("toggle_paid_dues")
+                    ) {
+                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Paid Ledger ($paidPayCount)", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
         }
 
         if (filteredEmployees.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        imageVector = Icons.Default.SearchOff,
-                        contentDescription = "Empty",
-                        modifier = Modifier.size(48.dp),
-                        tint = MaterialTheme.colorScheme.outline
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "No employees found",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.outline
-                    )
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = Icons.Default.SearchOff,
+                            contentDescription = "Empty",
+                            modifier = Modifier.size(48.dp),
+                            tint = MaterialTheme.colorScheme.outline
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "No employees found",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                    }
                 }
             }
         } else {
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                items(filteredEmployees) { employeeName ->
-                    val unpaidDues = unpaidDuesMap[employeeName] ?: emptyList()
-                    val totalPaid = totalPaidMap[employeeName] ?: 0.0
-                    val unpaidRange = unpaidRangeMap[employeeName] ?: "No outstanding dues"
-                    val isExpanded = expandedEmployeeName == employeeName
-                    val paidDues = paidDuesMap[employeeName] ?: emptyList()
-                    val paidRange = remember(paidDues) {
-                        if (paidDues.isEmpty()) "No paid records"
-                        else {
-                            val sorted = paidDues.sortedBy { it.rowIndex }
-                            val first = parseAndFormatDate(sorted.first().timestamp)
-                            val last = parseAndFormatDate(sorted.last().timestamp)
-                            if (first == last) first else "$first to $last"
-                        }
+            items(filteredEmployees, key = { it }) { employeeName ->
+                val unpaidDues = unpaidDuesMap[employeeName] ?: emptyList()
+                val totalPaid = totalPaidMap[employeeName] ?: 0.0
+                val unpaidRange = unpaidRangeMap[employeeName] ?: "No outstanding dues"
+                val isExpanded = expandedEmployeeName == employeeName
+                val paidDues = paidDuesMap[employeeName] ?: emptyList()
+                val paidRange = remember(paidDues) {
+                    if (paidDues.isEmpty()) "No paid records"
+                    else {
+                        val sorted = paidDues.sortedBy { it.rowIndex }
+                        val first = parseAndFormatDate(sorted.first().timestamp)
+                        val last = parseAndFormatDate(sorted.last().timestamp)
+                        if (first == last) first else "$first to $last"
                     }
+                }
 
-                    EmployeeItemCard(
-                        name = employeeName,
-                        unpaidDues = unpaidDues,
-                        paidDues = paidDues,
-                        showPaidMode = showPaidDuesMode,
-                        totalPaid = totalPaid,
-                        unpaidRange = unpaidRange,
-                        paidRange = paidRange,
-                        isExpanded = isExpanded,
-                        onExpandToggle = {
-                            expandedEmployeeName = if (isExpanded) null else employeeName
-                        },
-                        onMarkPaidAll = {
-                            selectedEmployeeForPaymentConfirm = employeeName
-                        },
-                        onMarkSinglePaid = { payment ->
-                            singlePaymentToConfirm = payment
-                        },
-                        isUnlocked = isUnlocked
-                    )
-                }
-                item {
-                    Spacer(modifier = Modifier.height(32.dp))
-                }
+                EmployeeItemCard(
+                    name = employeeName,
+                    unpaidDues = unpaidDues,
+                    paidDues = paidDues,
+                    showPaidMode = showPaidDuesMode,
+                    totalPaid = totalPaid,
+                    unpaidRange = unpaidRange,
+                    paidRange = paidRange,
+                    isExpanded = isExpanded,
+                    onExpandToggle = {
+                        expandedEmployeeName = if (isExpanded) null else employeeName
+                    },
+                    onMarkPaidAll = {
+                        selectedEmployeeForPaymentConfirm = employeeName
+                    },
+                    onMarkSinglePaid = { payment ->
+                        singlePaymentToConfirm = payment
+                    },
+                    onMarkSingleUnpaid = { payment ->
+                        viewModel.markRowAsUnpaid(payment)
+                    },
+                    isUnlocked = isUnlocked
+                )
             }
         }
     }
@@ -886,6 +956,7 @@ fun EmployeeItemCard(
     onExpandToggle: () -> Unit,
     onMarkPaidAll: () -> Unit,
     onMarkSinglePaid: (PaymentRow) -> Unit,
+    onMarkSingleUnpaid: ((PaymentRow) -> Unit)? = null,
     isUnlocked: Boolean
 ) {
     val totalUnpaid = remember(unpaidDues) { unpaidDues.sumOf { it.staffCommission } }
@@ -936,17 +1007,18 @@ fun EmployeeItemCard(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        // Avatar placeholder
+                        // Avatar placeholder with custom color
+                        val avatarBg = remember(name) { getAvatarColor(name) }
                         Box(
                             modifier = Modifier
-                                .size(40.dp)
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), CircleShape),
+                                .size(42.dp)
+                                .background(avatarBg, CircleShape),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
                                 text = name.take(2).uppercase(),
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Color.White,
                                 fontSize = 15.sp
                             )
                         }
@@ -976,47 +1048,87 @@ fun EmployeeItemCard(
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(SuccessGreen.copy(alpha = 0.15f))
-                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                    .background(SuccessGreen)
+                                    .padding(horizontal = 10.dp, vertical = 4.dp),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Text(
-                                    text = "${paidDues.size} Paid",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = SuccessGreen
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Text(
+                                        text = "${paidDues.size} Paid",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White
+                                    )
+                                }
                             }
                         } else {
                             if (hasPending) {
                                 Box(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(8.dp))
-                                        .background(MaterialTheme.colorScheme.errorContainer)
-                                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                                        .background(
+                                            Brush.horizontalGradient(
+                                                listOf(
+                                                    Color(0xFFFF6B81),
+                                                    Color(0xFFFFA07A)
+                                                )
+                                            )
+                                        )
+                                        .padding(horizontal = 10.dp, vertical = 4.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Text(
-                                        text = "${unpaidDues.size} Dues",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.error
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Schedule,
+                                            contentDescription = null,
+                                            tint = Color.White,
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                        Text(
+                                            text = "${unpaidDues.size} Dues",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White
+                                        )
+                                    }
                                 }
                             } else {
                                 Box(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(8.dp))
-                                        .background(SuccessGreen.copy(alpha = 0.15f))
-                                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                                        .background(SuccessGreen)
+                                        .padding(horizontal = 10.dp, vertical = 4.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Text(
-                                        text = "Paid up",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = SuccessGreen
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = null,
+                                            tint = Color.White,
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                        Text(
+                                            text = "Paid up",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1149,7 +1261,8 @@ fun EmployeeItemCard(
                             duesToShow.forEach { row ->
                                 LedgerItemRow(
                                     row = row,
-                                    onMarkPaid = { onMarkSinglePaid(row) }
+                                    onMarkPaid = { onMarkSinglePaid(row) },
+                                    onMarkUnpaid = { onMarkSingleUnpaid?.invoke(row) }
                                 )
                             }
                         }
@@ -1163,7 +1276,8 @@ fun EmployeeItemCard(
 @Composable
 fun LedgerItemRow(
     row: PaymentRow,
-    onMarkPaid: () -> Unit
+    onMarkPaid: () -> Unit,
+    onMarkUnpaid: (() -> Unit)? = null
 ) {
     Card(
         modifier = Modifier
@@ -1242,8 +1356,9 @@ fun LedgerItemRow(
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(6.dp))
-                            .background(SuccessGreen.copy(alpha = 0.12f))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                            .background(SuccessGreen)
+                            .then(if (onMarkUnpaid != null) Modifier.clickable { onMarkUnpaid() } else Modifier)
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -1252,14 +1367,14 @@ fun LedgerItemRow(
                             Icon(
                                 imageVector = Icons.Default.Check,
                                 contentDescription = "Paid",
-                                tint = SuccessGreen,
+                                tint = Color.White,
                                 modifier = Modifier.size(10.dp)
                             )
                             Text(
                                 text = "Paid",
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold,
-                                color = SuccessGreen
+                                color = Color.White
                             )
                         }
                     }
@@ -1292,6 +1407,517 @@ enum class LedgerSort {
     PAID_ASC, PAID_DESC,
     PENDING_ASC, PENDING_DESC,
     PAYOUT_ASC, PAYOUT_DESC
+}
+
+enum class PeriodMode {
+    ALL_TIME, MONTH, YEAR, CUSTOM
+}
+
+@Composable
+fun SalonEarningsHistorySection(
+    allPayments: List<PaymentRow>
+) {
+    var selectedPeriodMode by remember { mutableStateOf(PeriodMode.MONTH) }
+    var selectedYear by remember { mutableIntStateOf(java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)) }
+    var selectedMonth by remember { mutableIntStateOf(java.util.Calendar.getInstance().get(java.util.Calendar.MONTH)) }
+    var searchQuery by remember { mutableStateOf("") }
+    var isExpandedList by remember { mutableStateOf(false) }
+
+    val parsedPayments = remember(allPayments) {
+        allPayments.map { row ->
+            val ms = parseTimestampToMillis(row.timestamp)
+            val cal = java.util.Calendar.getInstance()
+            if (ms > 0L) {
+                cal.timeInMillis = ms
+            }
+            Triple(row, cal, ms)
+        }
+    }
+
+    val monthNames = remember {
+        listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+    }
+
+    val periodPayments = remember(parsedPayments, selectedPeriodMode, selectedYear, selectedMonth) {
+        parsedPayments.filter { (_, cal, _) ->
+            when (selectedPeriodMode) {
+                PeriodMode.ALL_TIME -> true
+                PeriodMode.MONTH -> cal.get(java.util.Calendar.YEAR) == selectedYear && cal.get(java.util.Calendar.MONTH) == selectedMonth
+                PeriodMode.YEAR -> cal.get(java.util.Calendar.YEAR) == selectedYear
+                PeriodMode.CUSTOM -> true
+            }
+        }
+    }
+
+    val totalGrossRevenue = remember(periodPayments) { periodPayments.sumOf { it.first.amountPaid } }
+    val totalSalonShare = remember(periodPayments) { periodPayments.sumOf { it.first.salonShare } }
+    val totalStaffCommissions = remember(periodPayments) { periodPayments.sumOf { it.first.staffCommission } }
+    val totalServicesCount = remember(periodPayments) { periodPayments.size }
+    val paidServicesCount = remember(periodPayments) { periodPayments.count { it.first.paid } }
+    val unpaidDuesSum = remember(periodPayments) { periodPayments.filter { !it.first.paid }.sumOf { it.first.staffCommission } }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("earnings_history_card"),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(20.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            // Header Title
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .background(
+                                Brush.linearGradient(listOf(HotPink, RichGold)),
+                                CircleShape
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.DateRange,
+                            contentDescription = "History",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Column {
+                        Text(
+                            text = "Salon Earnings History",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Filter history by Month, Year, or All Time",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+
+            // Period Selector Tabs (Month, Year, All Time)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                    .padding(3.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                listOf(
+                    PeriodMode.MONTH to "Month",
+                    PeriodMode.YEAR to "Year",
+                    PeriodMode.ALL_TIME to "All Time"
+                ).forEach { (mode, label) ->
+                    val isSelected = selectedPeriodMode == mode
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
+                            .clickable { selectedPeriodMode = mode }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            // Period Controls
+            when (selectedPeriodMode) {
+                PeriodMode.MONTH -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(
+                            onClick = {
+                                if (selectedMonth > 0) {
+                                    selectedMonth -= 1
+                                } else {
+                                    selectedMonth = 11
+                                    selectedYear -= 1
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.ChevronLeft, contentDescription = "Prev Month")
+                        }
+
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = "${monthNames[selectedMonth]} $selectedYear",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "$totalServicesCount transactions",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+
+                        IconButton(
+                            onClick = {
+                                if (selectedMonth < 11) {
+                                    selectedMonth += 1
+                                } else {
+                                    selectedMonth = 0
+                                    selectedYear += 1
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.ChevronRight, contentDescription = "Next Month")
+                        }
+                    }
+                }
+                PeriodMode.YEAR -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(
+                            onClick = { selectedYear -= 1 }
+                        ) {
+                            Icon(Icons.Default.ChevronLeft, contentDescription = "Prev Year")
+                        }
+
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = "Year $selectedYear",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "$totalServicesCount transactions",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+
+                        IconButton(
+                            onClick = { selectedYear += 1 }
+                        ) {
+                            Icon(Icons.Default.ChevronRight, contentDescription = "Next Year")
+                        }
+                    }
+                }
+                PeriodMode.ALL_TIME -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "Full History (${periodPayments.size} total entries)",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+                else -> {}
+            }
+
+            // Key Period Metrics Grid
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Card(
+                    modifier = Modifier.weight(1f),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Text(text = "Gross Revenue", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        Text(text = formatKES(totalGrossRevenue), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Black)
+                    }
+                }
+
+                Card(
+                    modifier = Modifier.weight(1f),
+                    colors = CardDefaults.cardColors(containerColor = SuccessGreen.copy(alpha = 0.12f)),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Text(text = "Salon Net", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = SuccessGreen)
+                        Text(text = formatKES(totalSalonShare), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Black, color = SuccessGreen)
+                    }
+                }
+
+                Card(
+                    modifier = Modifier.weight(1f),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.4f)),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Text(text = "Staff Dues", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.tertiary)
+                        Text(text = formatKES(totalStaffCommissions), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Black)
+                    }
+                }
+            }
+
+            // Secondary Info Bar
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Paid Services: $paidServicesCount / $totalServicesCount",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "Unpaid Dues: ${formatKES(unpaidDuesSum)}",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (unpaidDuesSum > 0) MaterialTheme.colorScheme.error else SuccessGreen
+                )
+            }
+
+            // Visual Period Revenue Bar Chart
+            if (periodPayments.isNotEmpty()) {
+                Text(
+                    text = "Period Revenue Breakdown",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                PeriodRevenueVisualizer(
+                    periodPayments = periodPayments,
+                    periodMode = selectedPeriodMode,
+                    selectedYear = selectedYear,
+                    selectedMonth = selectedMonth
+                )
+            }
+
+            // Expandable Period Transactions List
+            OutlinedButton(
+                onClick = { isExpandedList = !isExpandedList },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isExpandedList) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = "Toggle List"
+                    )
+                    Text(
+                        text = if (isExpandedList) "Hide Period Transactions List" else "View Period Transactions (${periodPayments.size})",
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            if (isExpandedList) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("Search period entries...", fontSize = 13.sp) },
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { searchQuery = "" }) {
+                                Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                )
+
+                val filteredPeriodList = remember(periodPayments, searchQuery) {
+                    if (searchQuery.isBlank()) periodPayments.map { it.first }
+                    else periodPayments.map { it.first }.filter {
+                        it.name.contains(searchQuery, ignoreCase = true) ||
+                        it.serviceName.contains(searchQuery, ignoreCase = true) ||
+                        it.section.contains(searchQuery, ignoreCase = true) ||
+                        it.paymentMethod.contains(searchQuery, ignoreCase = true)
+                    }
+                }
+
+                if (filteredPeriodList.isEmpty()) {
+                    Text("No transactions match search criteria.", fontSize = 12.sp, color = MaterialTheme.colorScheme.outline)
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 280.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        filteredPeriodList.forEach { row ->
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(text = row.serviceName, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                        Text(text = "${row.name} • ${row.timestamp.ifEmpty { "Row #${row.rowIndex}" }}", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                                    }
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(text = formatKES(row.amountPaid), fontWeight = FontWeight.ExtraBold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                                        Text(
+                                            text = if (row.paid) "PAID" else "UNPAID",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (row.paid) SuccessGreen else MaterialTheme.colorScheme.error
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PeriodRevenueVisualizer(
+    periodPayments: List<Triple<PaymentRow, java.util.Calendar, Long>>,
+    periodMode: PeriodMode,
+    selectedYear: Int,
+    selectedMonth: Int
+) {
+    val chartData = remember(periodPayments, periodMode, selectedYear, selectedMonth) {
+        when (periodMode) {
+            PeriodMode.MONTH -> {
+                val cal = java.util.Calendar.getInstance()
+                cal.set(selectedYear, selectedMonth, 1)
+                val maxDay = cal.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
+                val dayMap = periodPayments.groupBy { it.second.get(java.util.Calendar.DAY_OF_MONTH) }
+                (1..maxDay).map { day ->
+                    val sum = dayMap[day]?.sumOf { it.first.amountPaid } ?: 0.0
+                    "$day" to sum
+                }
+            }
+            PeriodMode.YEAR -> {
+                val monthsShort = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+                val monthMap = periodPayments.groupBy { it.second.get(java.util.Calendar.MONTH) }
+                (0..11).map { monthIdx ->
+                    val sum = monthMap[monthIdx]?.sumOf { it.first.amountPaid } ?: 0.0
+                    monthsShort[monthIdx] to sum
+                }
+            }
+            else -> {
+                periodPayments.groupBy { it.first.serviceName }
+                    .mapValues { (_, list) -> list.sumOf { it.first.amountPaid } }
+                    .toList()
+                    .take(8)
+            }
+        }
+    }
+
+    val maxVal = remember(chartData) {
+        val max = chartData.maxOfOrNull { it.second } ?: 1.0
+        if (max <= 0) 1.0 else max
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(90.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Bottom
+            ) {
+                chartData.forEach { (_, value) ->
+                    val heightRatio = (value / maxVal).toFloat().coerceIn(0.05f, 1f)
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Bottom,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        if (value > 0) {
+                            Text(
+                                text = if (value >= 1000) "${(value / 1000).toInt()}k" else "${value.toInt()}",
+                                fontSize = 8.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(0.65f)
+                                .fillMaxHeight(heightRatio)
+                                .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+                                .background(
+                                    if (value > 0) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+                                )
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                chartData.forEach { (label, _) ->
+                    Text(
+                        text = label,
+                        fontSize = 8.sp,
+                        color = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.weight(1f),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1336,7 +1962,6 @@ fun InsightsTab(viewModel: PaymentViewModel) {
             }
             .toList()
             .sortedByDescending { it.second }
-            .take(6)
     }
 
     val activeRevenueByPaymentMethod = remember(activePayments, showOnlyPaidRevenue) {
@@ -1382,6 +2007,9 @@ fun InsightsTab(viewModel: PaymentViewModel) {
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onBackground
         )
+
+        // Salon Earnings History Component
+        SalonEarningsHistorySection(allPayments = allPayments)
 
         // Modern Segmented Toggle for Revenue Stats
         Row(
@@ -1583,12 +2211,17 @@ fun InsightsTab(viewModel: PaymentViewModel) {
                         Text("No service data available", color = MaterialTheme.colorScheme.outline)
                     }
                 } else {
-                    RevenueBarChart(
-                        data = activeRevenueByService,
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(240.dp)
-                    )
+                            .heightIn(max = 280.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        RevenueBarChart(
+                            data = activeRevenueByService,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
             }
         }
@@ -1835,15 +2468,15 @@ fun InfoSummaryCard(
         Column(modifier = Modifier.padding(14.dp)) {
             Box(
                 modifier = Modifier
-                    .size(32.dp)
-                    .background(tint.copy(alpha = 0.1f), CircleShape),
+                    .size(34.dp)
+                    .background(tint, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
-                    tint = tint,
-                    modifier = Modifier.size(16.dp)
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp)
                 )
             }
             Spacer(modifier = Modifier.height(10.dp))
@@ -1864,7 +2497,7 @@ fun InfoSummaryCard(
     }
 }
 
-// Custom Colors for visual charts
+// Custom Colors for visual charts & employee avatars
 val chartColors = listOf(
     Color(0xFFD7205C), // Hot Pink
     Color(0xFFE9B747), // Metallic Gold
@@ -1873,6 +2506,21 @@ val chartColors = listOf(
     Color(0xFF7E3420), // Dark Bronze
     Color(0xFFF2C3B1)  // Warm Beige
 )
+
+val avatarPalette = listOf(
+    Color(0xFFD7205C), // Hot Pink
+    Color(0xFFB4791B), // Rich Gold
+    Color(0xFF1565C0), // Info Blue
+    Color(0xFF2E7D32), // Success Green
+    Color(0xFF7E3420), // Dark Bronze
+    Color(0xFFEF6C00), // Alert Orange
+    Color(0xFF8E24AA)  // Deep Purple
+)
+
+fun getAvatarColor(name: String): Color {
+    val hash = kotlin.math.abs(name.hashCode())
+    return avatarPalette[hash % avatarPalette.size]
+}
 
 @Composable
 fun RevenueDonutChart(
@@ -1999,13 +2647,11 @@ fun SettingsTab(
 ) {
     var sheetUrl by remember { mutableStateOf(state.config?.spreadsheetUrl ?: "") }
     var sheetName by remember { mutableStateOf(state.config?.sheetName.takeIf { !it.isNullOrBlank() } ?: "Service Ledger") }
-    var webhookUrlInput by remember { mutableStateOf(viewModel.webhookUrl.value) }
-    var onlineDownloadUrl by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
     var confirmPin by remember { mutableStateOf("") }
 
     // PIN unlock dialog states
-    var enteredUnlockPin by remember { mutableStateOf("") }
+    var showUnlockDialog by remember { mutableStateOf(false) }
     var showClearLedgerPinConfirm by remember { mutableStateOf(false) }
 
     val scrollState = rememberScrollState()
@@ -2043,132 +2689,165 @@ fun SettingsTab(
             color = MaterialTheme.colorScheme.onBackground
         )
 
-        // Info Card - No API Key Required!
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
-            ),
-            shape = RoundedCornerShape(16.dp),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
-        ) {
-            Row(
-                modifier = Modifier.padding(14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Info,
-                    contentDescription = "Info",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(24.dp)
-                )
-                Column {
-                    Text(
-                        text = "✅ No API Key Required!",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Text(
-                        text = "Just make your Google Sheet public (Anyone with the link can view) and paste the URL below.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-
-        // Lock / Unlock Verification Section
+        // Minimalistic Key Access Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
                 containerColor = if (isUnlocked) SuccessGreen.copy(alpha = 0.08f)
-                else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.15f)
+                else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
             ),
             shape = RoundedCornerShape(16.dp),
             border = BorderStroke(
                 1.dp,
-                if (isUnlocked) SuccessGreen.copy(alpha = 0.2f)
-                else MaterialTheme.colorScheme.error.copy(alpha = 0.2f)
+                if (isUnlocked) SuccessGreen.copy(alpha = 0.25f)
+                else MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
             )
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Icon(
-                        imageVector = if (isUnlocked) Icons.Default.LockOpen else Icons.Default.Lock,
-                        contentDescription = "Lock",
-                        tint = if (isUnlocked) SuccessGreen else MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Text(
-                        text = if (isUnlocked) "Authorized Owner Access" else "Locked: View Only Access",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isUnlocked) SuccessGreen else MaterialTheme.colorScheme.error
-                    )
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .background(
+                                if (isUnlocked) SuccessGreen else MaterialTheme.colorScheme.primary,
+                                CircleShape
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (isUnlocked) Icons.Default.LockOpen else Icons.Default.Lock,
+                            contentDescription = "Lock State",
+                            tint = Color.White,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    Column {
+                        Text(
+                            text = if (isUnlocked) "Authorized Owner Access" else "Owner Access Key Required",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isUnlocked) SuccessGreen else MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = if (isUnlocked) "You have full access to edit settings and manage ledger."
+                            else "Click to enter PIN key and unlock full configuration.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                        )
+                    }
                 }
 
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Text(
-                    text = if (isUnlocked) "You have verified ownership. You can map new spreadsheets and mark employee balances as paid."
-                    else "Marking rows as paid and changing sheet mapping is locked. Enter your owner PIN below to gain access.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
                 if (!isUnlocked) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    Button(
+                        onClick = { showUnlockDialog = true },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary
+                        ),
+                        modifier = Modifier.testTag("open_unlock_dialog_button")
                     ) {
-                        OutlinedTextField(
-                            value = enteredUnlockPin,
-                            onValueChange = { enteredUnlockPin = it },
-                            label = { Text("Enter Owner PIN") },
-                            visualTransformation = PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(56.dp)
-                                .testTag("unlock_pin_input"),
-                            shape = RoundedCornerShape(10.dp),
-                            singleLine = true
-                        )
-
-                        Button(
-                            onClick = {
-                                viewModel.verifyPin(enteredUnlockPin, state.config?.ownerPin ?: "1234")
-                                enteredUnlockPin = ""
-                            },
-                            modifier = Modifier
-                                .height(56.dp)
-                                .testTag("unlock_button"),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Text("Unlock")
-                        }
+                        Icon(Icons.Default.VpnKey, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Enter Key", fontWeight = FontWeight.Bold)
                     }
                 } else {
                     OutlinedButton(
                         onClick = { viewModel.lockAccess() },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp),
+                        shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.outlinedButtonColors(
                             contentColor = MaterialTheme.colorScheme.error
-                        )
+                        ),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f))
                     ) {
-                        Text("Lock Owner Controls")
+                        Text("Lock", fontWeight = FontWeight.Bold)
                     }
                 }
             }
+        }
+
+        // Key Entry Dialog
+        if (showUnlockDialog) {
+            var pinInput by remember { mutableStateOf("") }
+            var pinError by remember { mutableStateOf(false) }
+
+            AlertDialog(
+                onDismissRequest = { showUnlockDialog = false },
+                icon = {
+                    Icon(
+                        imageVector = Icons.Default.VpnKey,
+                        contentDescription = "Key Icon",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(28.dp)
+                    )
+                },
+                title = {
+                    Text(
+                        text = "Enter Owner Key",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = "Please enter your owner security PIN key to unlock configuration and ledger controls.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedTextField(
+                            value = pinInput,
+                            onValueChange = {
+                                pinInput = it
+                                pinError = false
+                            },
+                            label = { Text("Owner PIN") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            isError = pinError,
+                            supportingText = if (pinError) {
+                                { Text("Incorrect PIN. Please try again.", color = MaterialTheme.colorScheme.error) }
+                            } else null,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("unlock_pin_input"),
+                            shape = RoundedCornerShape(10.dp)
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val success = viewModel.verifyPin(pinInput, state.config?.ownerPin ?: "1234")
+                            if (success) {
+                                showUnlockDialog = false
+                            } else {
+                                pinError = true
+                            }
+                        },
+                        modifier = Modifier.testTag("submit_unlock_pin_button"),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text("Verify & Access", fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showUnlockDialog = false }) {
+                        Text("Cancel")
+                    }
+                },
+                shape = RoundedCornerShape(16.dp)
+            )
         }
 
         firstRowPreview?.let { preview ->
@@ -2178,153 +2857,239 @@ fun SettingsTab(
             )
         }
 
-        // Mapping Form Panel
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            shape = RoundedCornerShape(16.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        // Blurred / Protected Configuration Controls
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .graphicsLayer {
+                    alpha = if (isUnlocked) 1.0f else 0.45f
+                }
+                .blur(if (isUnlocked) 0.dp else 10.dp)
         ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                Text(
-                    text = "Map Google Form Spreadsheet",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-
-                Text(
-                    text = "Ensure your spreadsheet share permissions are set to 'Anyone with the link can view' so the app can fetch rows securely.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.outline
-                )
-
-                OutlinedTextField(
-                    value = sheetUrl,
-                    onValueChange = { sheetUrl = it },
-                    label = { Text("Spreadsheet URL") },
-                    placeholder = { Text("https://docs.google.com/spreadsheets/d/...") },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("spreadsheet_url_input"),
-                    shape = RoundedCornerShape(10.dp),
-                    maxLines = 2,
-                    enabled = isUnlocked || state.config == null
-                )
-
-                OutlinedTextField(
-                    value = sheetName,
-                    onValueChange = { sheetName = it },
-                    label = { Text("Sheet Name") },
-                    placeholder = { Text("Service Ledger") },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("sheet_name_input"),
-                    shape = RoundedCornerShape(10.dp),
-                    singleLine = true,
-                    enabled = isUnlocked || state.config == null
-                )
-
-                if (state.config == null || isUnlocked) {
-                    Text(
-                        text = "Configure/Change Owner Security PIN:",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                // Mapping Form Panel
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    shape = RoundedCornerShape(16.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        OutlinedTextField(
-                            value = pin,
-                            onValueChange = { pin = it },
-                            label = { Text("New PIN") },
-                            visualTransformation = PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("setup_pin_input"),
-                            shape = RoundedCornerShape(10.dp),
-                            singleLine = true
+                        Text(
+                            text = "Map Google Form Spreadsheet",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+
+                        Text(
+                            text = "Ensure your spreadsheet share permissions are set to 'Anyone with the link can view' so the app can fetch rows securely.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline
                         )
 
                         OutlinedTextField(
-                            value = confirmPin,
-                            onValueChange = { confirmPin = it },
-                            label = { Text("Confirm PIN") },
-                            visualTransformation = PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            value = sheetUrl,
+                            onValueChange = { sheetUrl = it },
+                            label = { Text("Spreadsheet URL") },
+                            placeholder = { Text("https://docs.google.com/spreadsheets/d/...") },
                             modifier = Modifier
-                                .weight(1f)
-                                .testTag("setup_confirm_pin_input"),
+                                .fillMaxWidth()
+                                .testTag("spreadsheet_url_input"),
                             shape = RoundedCornerShape(10.dp),
-                            singleLine = true
+                            maxLines = 2,
+                            enabled = isUnlocked || state.config == null
                         )
+
+                        OutlinedTextField(
+                            value = sheetName,
+                            onValueChange = { sheetName = it },
+                            label = { Text("Sheet Name") },
+                            placeholder = { Text("Service Ledger") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("sheet_name_input"),
+                            shape = RoundedCornerShape(10.dp),
+                            singleLine = true,
+                            enabled = isUnlocked || state.config == null
+                        )
+
+                        if (state.config == null || isUnlocked) {
+                            Text(
+                                text = "Configure/Change Owner Security PIN:",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = pin,
+                                    onValueChange = { pin = it },
+                                    label = { Text("New PIN") },
+                                    visualTransformation = PasswordVisualTransformation(),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("setup_pin_input"),
+                                    shape = RoundedCornerShape(10.dp),
+                                    singleLine = true
+                                )
+
+                                OutlinedTextField(
+                                    value = confirmPin,
+                                    onValueChange = { confirmPin = it },
+                                    label = { Text("Confirm PIN") },
+                                    visualTransformation = PasswordVisualTransformation(),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("setup_confirm_pin_input"),
+                                    shape = RoundedCornerShape(10.dp),
+                                    singleLine = true
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        Button(
+                            onClick = {
+                                if (sheetUrl.isBlank()) return@Button
+                                if (pin.isNotBlank() && pin != confirmPin) {
+                                    return@Button
+                                }
+                                val savePin = if (pin.isNotBlank()) pin else (state.config?.ownerPin ?: "1234")
+                                viewModel.mapSpreadsheet(sheetUrl, savePin)
+                                pin = ""
+                                confirmPin = ""
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp)
+                                .testTag("save_mapping_button"),
+                            shape = RoundedCornerShape(10.dp),
+                            enabled = (isUnlocked || state.config == null) && sheetUrl.isNotBlank()
+                        ) {
+                            Icon(Icons.Default.CloudUpload, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Save & Synchronize Map", fontWeight = FontWeight.Bold)
+                        }
+
+                        // Switch back to Demo Button
+                        OutlinedButton(
+                            onClick = { viewModel.switchToDemoMode() },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp)
+                                .testTag("reset_demo_button"),
+                            shape = RoundedCornerShape(10.dp),
+                        ) {
+                            Icon(Icons.Default.Restore, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Load Local Demo Database", fontWeight = FontWeight.Bold)
+                        }
+
+                        // Clear existing data button
+                        OutlinedButton(
+                            onClick = { showClearLedgerPinConfirm = true },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp)
+                                .testTag("clear_data_button"),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error
+                            ),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f))
+                        ) {
+                            Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Clear Local Ledger / Dummy Data", fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(4.dp))
-
-                Button(
-                    onClick = {
-                        if (sheetUrl.isBlank()) return@Button
-                        if (pin.isNotBlank() && pin != confirmPin) {
-                            return@Button
+                // Upload spreadsheet local file card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    shape = RoundedCornerShape(16.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CloudUpload,
+                                contentDescription = "Upload Icon",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Text(
+                                text = "Import Local Spreadsheet File",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
                         }
-                        val savePin = if (pin.isNotBlank()) pin else (state.config?.ownerPin ?: "1234")
-                        viewModel.mapSpreadsheet(sheetUrl, savePin)
-                        pin = ""
-                        confirmPin = ""
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(50.dp)
-                        .testTag("save_mapping_button"),
-                    shape = RoundedCornerShape(10.dp),
-                    enabled = (isUnlocked || state.config == null) && sheetUrl.isNotBlank()
-                ) {
-                    Icon(Icons.Default.CloudUpload, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Save & Synchronize Map", fontWeight = FontWeight.Bold)
-                }
 
-                // Switch back to Demo Button
-                OutlinedButton(
-                    onClick = { viewModel.switchToDemoMode() },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(50.dp)
-                        .testTag("reset_demo_button"),
-                    shape = RoundedCornerShape(10.dp),
-                ) {
-                    Icon(Icons.Default.Restore, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Load Local Demo Database", fontWeight = FontWeight.Bold)
-                }
+                        Text(
+                            text = "If you have exported your Google Sheet or Excel as an Excel Spreadsheet (.xlsx), CSV, or TSV file, you can upload it directly below to run completely offline without mapping URLs.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
 
-                // Clear existing data button
-                OutlinedButton(
-                    onClick = { showClearLedgerPinConfirm = true },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(50.dp)
-                        .testTag("clear_data_button"),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error
-                    ),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f))
-                ) {
-                    Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Clear Local Ledger / Dummy Data", fontWeight = FontWeight.Bold)
+                        Button(
+                            onClick = {
+                                filePickerLauncher.launch("*/*")
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .testTag("upload_local_file_button"),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            ),
+                            enabled = isUnlocked || state.config == null
+                        ) {
+                            Icon(Icons.Default.CloudUpload, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Select & Import File", fontWeight = FontWeight.Bold)
+                        }
+
+                        Text(
+                            text = "Supported formats: .xlsx, .csv, .tsv",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            modifier = Modifier.align(Alignment.CenterHorizontally)
+                        )
+                    }
                 }
+            }
+
+            // Click interceptor over blurred content when locked
+            if (!isUnlocked) {
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .clickable { showUnlockDialog = true }
+                )
             }
         }
 
@@ -2340,144 +3105,6 @@ fun SettingsTab(
                     showClearLedgerPinConfirm = false
                 }
             )
-        }
-
-        // Download worksheet from direct online URL card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            shape = RoundedCornerShape(16.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CloudDownload,
-                        contentDescription = "Download Online Icon",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Text(
-                        text = "Download Worksheet from Online URL",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-
-                Text(
-                    text = "Provide an online URL to download the 'Service Ledger' worksheet directly to your phone's storage and import all records into your app (supports Google Sheets links, public CSV/TSV web links, or raw .xlsx file URLs).",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary
-                )
-
-                OutlinedTextField(
-                    value = onlineDownloadUrl,
-                    onValueChange = { onlineDownloadUrl = it },
-                    label = { Text("Direct Online Worksheet URL") },
-                    placeholder = { Text("https://docs.google.com/... or https://example.com/sheet.csv") },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("online_download_url_input"),
-                    shape = RoundedCornerShape(10.dp),
-                    maxLines = 2,
-                    enabled = isUnlocked || state.config == null
-                )
-
-                Button(
-                    onClick = {
-                        if (onlineDownloadUrl.isNotBlank()) {
-                            viewModel.downloadWorksheetFromUrl(onlineDownloadUrl)
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 48.dp)
-                        .testTag("download_online_url_button"),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    ),
-                    enabled = (isUnlocked || state.config == null) && onlineDownloadUrl.isNotBlank()
-                ) {
-                    Icon(Icons.Default.CloudDownload, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Download 'Service Ledger' to Phone & Import", fontWeight = FontWeight.Bold)
-                }
-            }
-        }
-
-        // Upload spreadsheet local file card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            shape = RoundedCornerShape(16.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CloudUpload,
-                        contentDescription = "Upload Icon",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Text(
-                        text = "Import Local Spreadsheet File",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-
-                Text(
-                    text = "If you have exported your Google Sheet or Excel as an Excel Spreadsheet (.xlsx), CSV, or TSV file, you can upload it directly below to run completely offline without mapping URLs.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary
-                )
-
-                Button(
-                    onClick = {
-                        filePickerLauncher.launch("*/*")
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 48.dp)
-                        .testTag("upload_local_file_button"),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    ),
-                    enabled = isUnlocked || state.config == null
-                ) {
-                    Icon(Icons.Default.CloudUpload, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Select & Import File", fontWeight = FontWeight.Bold)
-                }
-
-                Text(
-                    text = "Supported formats: .xlsx, .csv, .tsv",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                    modifier = Modifier.align(Alignment.CenterHorizontally)
-                )
-            }
         }
 
         Spacer(modifier = Modifier.height(48.dp))
