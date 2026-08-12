@@ -22,6 +22,22 @@ data class PaymentRow(
     val month: String = ""
 )
 
+@Entity(tableName = "expense_rows")
+data class ExpenseRow(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val spreadsheetId: String = "demo_spreadsheet",
+    val rowIndex: Int = 0,
+    val date: String = "",
+    val recordedBy: String = "",
+    val department: String = "",
+    val expenseType: String = "",
+    val itemPurchased: String = "",
+    val quantity: Double = 1.0,
+    val amountSpent: Double = 0.0,
+    val paymentMethod: String = "",
+    val month: String = ""
+)
+
 @Entity(tableName = "sheet_config")
 data class SheetConfig(
     @PrimaryKey val id: String = "active_config",

@@ -58,6 +58,7 @@ import android.util.Log
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import com.example.data.PaymentRow
+import com.example.data.ExpenseRow
 import com.example.data.SheetConfig
 import com.example.ui.theme.*
 import java.text.NumberFormat
@@ -78,7 +79,7 @@ fun PaymentAppScreen(viewModel: PaymentViewModel) {
     val config = (uiState as? PaymentUiState.Success)?.config
 
     var activeTab by remember { mutableStateOf(0) }
-    val tabs = listOf("Dues List", "Revenue Insights", "Settings & Mapping")
+    val tabs = listOf("Dues List", "Revenue Insights", "Expenses", "Settings & Mapping")
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -114,9 +115,9 @@ fun PaymentAppScreen(viewModel: PaymentViewModel) {
                                     Brush.linearGradient(listOf(HotPink, RichGold)),
                                     CircleShape
                                 )
-                                .padding(2.dp)
+                                .padding(2.5.dp)
                                 .clip(CircleShape)
-                                .background(Color.Black),
+                                .background(Color(0xFF1E1E1E)),
                             contentAlignment = Alignment.Center
                         ) {
                             Image(
@@ -213,11 +214,13 @@ fun PaymentAppScreen(viewModel: PaymentViewModel) {
                     val icon = when (index) {
                         0 -> if (activeTab == index) Icons.Default.Dashboard else Icons.Outlined.Dashboard
                         1 -> if (activeTab == index) Icons.Default.Analytics else Icons.Outlined.Analytics
+                        2 -> if (activeTab == index) Icons.Default.ReceiptLong else Icons.Outlined.ReceiptLong
                         else -> if (activeTab == index) Icons.Default.Settings else Icons.Outlined.Settings
                     }
                     val tabName = when (index) {
                         0 -> "Dues"
-                        1 -> "Stats"
+                        1 -> "Revenue"
+                        2 -> "Expenses"
                         else -> "Config"
                     }
                     NavigationBarItem(
@@ -403,7 +406,8 @@ fun PaymentAppScreen(viewModel: PaymentViewModel) {
                             when (activeTab) {
                                 0 -> EmployeesListTab(state, viewModel, isUnlocked, onNavigateToHistory = { activeTab = 1 })
                                 1 -> InsightsTab(viewModel)
-                                2 -> SettingsTab(state, viewModel, isUnlocked)
+                                2 -> ExpensesTabContent(viewModel, isUnlocked)
+                                3 -> SettingsTab(state, viewModel, isUnlocked)
                             }
                         }
                     }
@@ -517,6 +521,7 @@ fun EmployeesListTab(
     val unpaidRangeMap by viewModel.unpaidDuesRangeByEmployee.collectAsStateWithLifecycle()
     val totalPaidMap by viewModel.totalPaidByEmployee.collectAsStateWithLifecycle()
     val allPayments by viewModel.allPayments.collectAsStateWithLifecycle()
+    val allExpenses by viewModel.allExpenses.collectAsStateWithLifecycle()
 
     val paidDuesMap = remember(allPayments) {
         allPayments.filter { it.paid }.groupBy { it.name }
@@ -551,17 +556,20 @@ fun EmployeesListTab(
         allPayments.filter { !it.paid }.size
     }
 
-    // Weekly comparison trend: current calendar week vs previous calendar week total earnings
-    val revenueTrendData = remember(allPayments) {
-        val parsedTimes = allPayments.map { row ->
-            row to parseTimestampToMillis(row.timestamp)
+    // Weekly comparison trend: current calendar week vs previous calendar week profitability (income - expenses)
+    val revenueTrendData = remember(allPayments, allExpenses) {
+        val parsedPayments = allPayments.map { row ->
+            row to parseTimestampToMillis(row.timestamp, row.month)
+        }
+        val parsedExpenses = allExpenses.map { row ->
+            row to parseTimestampToMillis(row.date, row.month)
         }
 
-        val validTimes = parsedTimes.filter { it.second > 0L }
-        if (validTimes.isEmpty()) {
-            Triple("0.0% vs last week", "neutral", Icons.AutoMirrored.Filled.TrendingUp)
+        val allMillis = (parsedPayments.map { it.second } + parsedExpenses.map { it.second }).filter { it > 0L }
+        if (allMillis.isEmpty()) {
+            Triple("0.0% profit vs last week", "neutral", Icons.AutoMirrored.Filled.TrendingUp)
         } else {
-            val maxDataTime = validTimes.maxOf { it.second }
+            val maxDataTime = maxOf(allMillis.maxOrNull() ?: 0L, System.currentTimeMillis())
             val calendar = java.util.Calendar.getInstance(java.util.TimeZone.getDefault()).apply {
                 timeInMillis = maxDataTime
                 firstDayOfWeek = java.util.Calendar.MONDAY
@@ -581,22 +589,29 @@ fun EmployeesListTab(
             }
             val previousWeekStartMs = previousWeekStartCal.timeInMillis
 
-            val thisWeekRevenue = parsedTimes.filter { it.second >= currentWeekStartMs }.sumOf { it.first.amountPaid }
-            val lastWeekRevenue = parsedTimes.filter { it.second in previousWeekStartMs until currentWeekStartMs }.sumOf { it.first.amountPaid }
+            val thisWeekRevenue = parsedPayments.filter { it.second >= currentWeekStartMs }.sumOf { it.first.amountPaid }
+            val thisWeekExpenses = parsedExpenses.filter { it.second >= currentWeekStartMs }.sumOf { it.first.amountSpent }
+            val thisWeekProfit = thisWeekRevenue - thisWeekExpenses
 
-            if (lastWeekRevenue == 0.0) {
-                if (thisWeekRevenue > 0.0) {
-                    Triple("+100% vs last week", "success", Icons.AutoMirrored.Filled.TrendingUp)
+            val lastWeekRevenue = parsedPayments.filter { it.second in previousWeekStartMs until currentWeekStartMs }.sumOf { it.first.amountPaid }
+            val lastWeekExpenses = parsedExpenses.filter { it.second in previousWeekStartMs until currentWeekStartMs }.sumOf { it.first.amountSpent }
+            val lastWeekProfit = lastWeekRevenue - lastWeekExpenses
+
+            if (lastWeekProfit == 0.0) {
+                if (thisWeekProfit > 0.0) {
+                    Triple("+100% profit vs last week", "success", Icons.AutoMirrored.Filled.TrendingUp)
+                } else if (thisWeekProfit < 0.0) {
+                    Triple("-100% profit vs last week", "error", Icons.Default.TrendingDown)
                 } else {
-                    Triple("0.0% vs last week", "neutral", Icons.AutoMirrored.Filled.TrendingUp)
+                    Triple("0.0% profit vs last week", "neutral", Icons.AutoMirrored.Filled.TrendingUp)
                 }
             } else {
-                val diffPct = ((thisWeekRevenue - lastWeekRevenue) / lastWeekRevenue) * 100.0
+                val diffPct = ((thisWeekProfit - lastWeekProfit) / kotlin.math.abs(lastWeekProfit)) * 100.0
                 val formattedPct = String.format(java.util.Locale.US, "%.1f", diffPct)
                 if (diffPct >= 0) {
-                    Triple("+$formattedPct% vs last week", "success", Icons.AutoMirrored.Filled.TrendingUp)
+                    Triple("+$formattedPct% profit vs last week", "success", Icons.AutoMirrored.Filled.TrendingUp)
                 } else {
-                    Triple("$formattedPct% vs last week", "error", Icons.Default.TrendingDown)
+                    Triple("$formattedPct% profit vs last week", "error", Icons.Default.TrendingDown)
                 }
             }
         }
@@ -1424,8 +1439,10 @@ fun SalonEarningsHistorySection(
     var isExpandedList by remember { mutableStateOf(false) }
 
     val parsedPayments = remember(allPayments) {
+        var prevMs = 0L
         allPayments.map { row ->
-            val ms = parseTimestampToMillis(row.timestamp)
+            val ms = parseTimestampToMillis(row.timestamp, row.month, prevMs)
+            if (ms > 0L) prevMs = ms
             val cal = java.util.Calendar.getInstance()
             if (ms > 0L) {
                 cal.timeInMillis = ms
@@ -1747,16 +1764,26 @@ fun SalonEarningsHistorySection(
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
-                    placeholder = { Text("Search period entries...", fontSize = 13.sp) },
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
-                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("Search period entries...", fontSize = 14.sp, color = MaterialTheme.colorScheme.outline) },
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(
+                        fontSize = 14.sp,
+                        lineHeight = 20.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                    ),
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search", modifier = Modifier.size(20.dp)) },
                     trailingIcon = {
                         if (searchQuery.isNotEmpty()) {
                             IconButton(onClick = { searchQuery = "" }) {
-                                Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(20.dp))
                             }
                         }
                     }
@@ -1794,8 +1821,13 @@ fun SalonEarningsHistorySection(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
+                                        val formattedDate = remember(row.timestamp, row.month) { parseAndFormatDate(row.timestamp, row.month) }
                                         Text(text = row.serviceName, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                        Text(text = "${row.name} • ${row.timestamp.ifEmpty { "Row #${row.rowIndex}" }}", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                                        Text(
+                                            text = "${row.name} • ${if (formattedDate.isNotBlank() && formattedDate != "Unknown") formattedDate else row.timestamp.ifEmpty { "Row #${row.rowIndex}" }}",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.outline
+                                        )
                                     }
                                     Column(horizontalAlignment = Alignment.End) {
                                         Text(text = formatKES(row.amountPaid), fontWeight = FontWeight.ExtraBold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
@@ -1878,8 +1910,14 @@ fun PeriodRevenueVisualizer(
                         modifier = Modifier.weight(1f)
                     ) {
                         if (value > 0) {
+                            val kVal = value / 1000.0
+                            val kStr = if (kVal >= 10 || kVal % 1.0 == 0.0) {
+                                "${kVal.toInt()}k"
+                            } else {
+                                String.format(java.util.Locale.US, "%.1fk", kVal)
+                            }
                             Text(
-                                text = if (value >= 1000) "${(value / 1000).toInt()}k" else "${value.toInt()}",
+                                text = kStr,
                                 fontSize = 8.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary,
@@ -3429,30 +3467,6 @@ fun getFileName(context: Context, uri: Uri): String {
     return result ?: "spreadsheet.tsv"
 }
 
-fun parseTimestampToMillis(timestamp: String): Long {
-    val formats = listOf(
-        "yyyy-MM-dd HH:mm:ss",
-        "yyyy-MM-dd HH:mm",
-        "yyyy-MM-dd",
-        "M/d/yyyy H:mm:ss",
-        "M/d/yyyy HH:mm:ss",
-        "M/d/yyyy H:mm",
-        "M/d/yyyy HH:mm",
-        "M/d/yyyy",
-        "d/M/yyyy"
-    )
-    for (format in formats) {
-        try {
-            val sdf = java.text.SimpleDateFormat(format, java.util.Locale.US)
-            sdf.isLenient = true
-            return sdf.parse(timestamp.trim())?.time ?: 0L
-        } catch (e: Exception) {
-            // Try next format
-        }
-    }
-    return 0L
-}
-
 @Composable
 fun FirstRowPreviewNotificationCard(
     previewText: String,
@@ -3555,6 +3569,859 @@ fun FirstRowPreviewNotificationCard(
                     Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
                     Text("Close / Dismiss Inspection Box", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
+    }
+}
+
+// ==========================================
+// EXPENSES TAB & PROFITABILITY COMPOSABLES
+// ==========================================
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ExpensesTabContent(viewModel: PaymentViewModel, isUnlocked: Boolean) {
+    val expenses by viewModel.filteredExpenses.collectAsStateWithLifecycle()
+    val totalExpenses by viewModel.totalExpensesAmount.collectAsStateWithLifecycle()
+    val grossRevenue by viewModel.totalGrossRevenueForPeriod.collectAsStateWithLifecycle()
+    val netProfit by viewModel.netProfit.collectAsStateWithLifecycle()
+    val profitMargin by viewModel.profitMarginPct.collectAsStateWithLifecycle()
+    val selectedPeriod by viewModel.expensesTimePeriod.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.expensesSearchQuery.collectAsStateWithLifecycle()
+    val selectedDept by viewModel.expensesSelectedDept.collectAsStateWithLifecycle()
+    val selectedType by viewModel.expensesSelectedType.collectAsStateWithLifecycle()
+    val departments by viewModel.expenseDepartments.collectAsStateWithLifecycle()
+    val types by viewModel.expenseTypes.collectAsStateWithLifecycle()
+    val availableMonths by viewModel.availableMonths.collectAsStateWithLifecycle()
+    val expensesByType by viewModel.expensesByType.collectAsStateWithLifecycle()
+    val expensesByDept by viewModel.expensesByDepartment.collectAsStateWithLifecycle()
+    val topCosts by viewModel.topCostItems.collectAsStateWithLifecycle()
+
+    val periods = remember(availableMonths) {
+        listOf("All Time") + availableMonths + listOf("This Week", "Today")
+    }
+
+    Scaffold { paddingValues ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            contentPadding = PaddingValues(bottom = 80.dp, top = 8.dp)
+        ) {
+            // 1. Title & Time Period Selector
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Expenses & Profitability",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
+
+                    // Period Pills
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        periods.forEach { period ->
+                            val isSelected = period == selectedPeriod
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = { viewModel.setExpensesTimePeriod(period) },
+                                label = {
+                                    Text(
+                                        text = period,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        fontSize = 12.sp
+                                    )
+                                },
+                                leadingIcon = if (isSelected) {
+                                    { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                                } else null,
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                                    selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimary
+                                ),
+                                modifier = Modifier.testTag("period_chip_$period")
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 2. Profitability Overview Card
+            item {
+                ExpensesProfitabilityCard(
+                    grossRevenue = grossRevenue,
+                    totalExpenses = totalExpenses,
+                    netProfit = netProfit,
+                    profitMargin = profitMargin,
+                    periodName = selectedPeriod
+                )
+            }
+
+            // 3. Cost Breakdown Visualizer Card ("What costs are the most")
+            item {
+                ExpensesVisualizerCard(
+                    totalExpenses = totalExpenses,
+                    expensesByType = expensesByType,
+                    expensesByDept = expensesByDept,
+                    topCostItems = topCosts
+                )
+            }
+
+            // 4. Search and Filters
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { viewModel.setExpensesSearchQuery(it) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("expenses_search_input"),
+                        placeholder = { Text("Search item, type, department, recorded by...") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
+                        trailingIcon = if (searchQuery.isNotEmpty()) {
+                            {
+                                IconButton(onClick = { viewModel.setExpensesSearchQuery("") }) {
+                                    Icon(Icons.Default.Clear, contentDescription = "Clear")
+                                }
+                            }
+                        } else null,
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+
+                    // Department & Category Chips
+                    if (departments.isNotEmpty() || types.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            FilterChip(
+                                selected = selectedDept == null && selectedType == null,
+                                onClick = {
+                                    viewModel.setExpensesDepartmentFilter(null)
+                                    viewModel.setExpensesTypeFilter(null)
+                                },
+                                label = { Text("All Records") }
+                            )
+
+                            departments.forEach { dept ->
+                                FilterChip(
+                                    selected = selectedDept == dept,
+                                    onClick = {
+                                        viewModel.setExpensesDepartmentFilter(if (selectedDept == dept) null else dept)
+                                    },
+                                    label = { Text("Dept: $dept") }
+                                )
+                            }
+
+                            types.forEach { type ->
+                                FilterChip(
+                                    selected = selectedType == type,
+                                    onClick = {
+                                        viewModel.setExpensesTypeFilter(if (selectedType == type) null else type)
+                                    },
+                                    label = { Text("Type: $type") }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 5. Expense Items Header & List
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Expense Records (${expenses.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Total Spent: KES ${String.format("%,.0f", totalExpenses)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+
+            if (expenses.isEmpty()) {
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                        ),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(32.dp).fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ReceiptLong,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(48.dp)
+                            )
+                            Text(
+                                text = "No Expense Records Found",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "No expenses recorded for $selectedPeriod. All expense entries are synced directly from the Google Sheets ledger.",
+                                style = MaterialTheme.typography.bodySmall,
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            } else {
+                items(expenses, key = { it.id }) { expense ->
+                    ExpenseItemCard(
+                        expense = expense
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ExpensesProfitabilityCard(
+    grossRevenue: Double,
+    totalExpenses: Double,
+    netProfit: Double,
+    profitMargin: Double,
+    periodName: String
+) {
+    val isProfitable = netProfit >= 0
+    val profitColor = if (isProfitable) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error
+    val cardBg = if (isProfitable) Color(0xFFE8F5E9) else Color(0xFFFFEBEE)
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("profitability_overview_card"),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = cardBg),
+        border = BorderStroke(1.dp, profitColor.copy(alpha = 0.3f))
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Net Profitability ($periodName)",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.Black.copy(alpha = 0.7f)
+                    )
+                    Text(
+                        text = "KES ${String.format("%,.0f", netProfit)}",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = profitColor
+                    )
+                }
+
+                Surface(
+                    color = profitColor,
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isProfitable) Icons.AutoMirrored.Filled.TrendingUp else Icons.Default.TrendingDown,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = String.format("%.1f%% Margin", profitMargin),
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            }
+
+            HorizontalDivider(color = profitColor.copy(alpha = 0.2f))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column {
+                    Text(
+                        text = "Gross Income",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.Black.copy(alpha = 0.6f)
+                    )
+                    Text(
+                        text = "KES ${String.format("%,.0f", grossRevenue)}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF1B5E20)
+                    )
+                }
+
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "Total Expenses",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.Black.copy(alpha = 0.6f)
+                    )
+                    Text(
+                        text = "KES ${String.format("%,.0f", totalExpenses)}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+
+            // Visual Progress Comparison Bar
+            val totalMagnitude = maxOf(grossRevenue, totalExpenses, 1.0)
+            val expFraction = (totalExpenses / totalMagnitude).toFloat().coerceIn(0f, 1f)
+
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(10.dp).clip(CircleShape).background(Color.White)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .weight(maxOf(expFraction, 0.01f))
+                            .background(MaterialTheme.colorScheme.error)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .weight(maxOf(1f - expFraction, 0.01f))
+                            .background(Color(0xFF2E7D32))
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Expenses: ${if (grossRevenue > 0) String.format("%.0f%%", (totalExpenses/grossRevenue)*100) else "0%"}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.Black.copy(alpha = 0.6f)
+                    )
+                    Text(
+                        text = "Retained Profit: ${if (grossRevenue > 0) String.format("%.0f%%", (netProfit/grossRevenue)*100) else "0%"}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.Black.copy(alpha = 0.6f),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ExpensesVisualizerCard(
+    totalExpenses: Double,
+    expensesByType: List<Pair<String, Double>>,
+    expensesByDept: List<Pair<String, Double>>,
+    topCostItems: List<ExpenseRow>
+) {
+    var selectedTab by remember { mutableStateOf(0) } // 0: By Type, 1: By Dept, 2: Top Items
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("cost_breakdown_visualizer_card"),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PieChart,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "Cost Breakdown Visualizer",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            // Sub-tabs
+            SecondaryTabRow(selectedTabIndex = selectedTab) {
+                Tab(
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 },
+                    text = { Text("Expense Types", fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
+                )
+                Tab(
+                    selected = selectedTab == 1,
+                    onClick = { selectedTab = 1 },
+                    text = { Text("Departments", fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
+                )
+                Tab(
+                    selected = selectedTab == 2,
+                    onClick = { selectedTab = 2 },
+                    text = { Text("Top Cost Items", fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
+                )
+            }
+
+            when (selectedTab) {
+                0 -> {
+                    if (expensesByType.isEmpty()) {
+                        Text("No expense type breakdown available", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            expensesByType.forEach { (type, amount) ->
+                                val pct = if (totalExpenses > 0) amount / totalExpenses else 0.0
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(type, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                                        Text("KES ${String.format("%,.0f", amount)} (${String.format("%.1f%%", pct * 100)})", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                                    }
+                                    LinearProgressIndicator(
+                                        progress = { pct.toFloat() },
+                                        modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
+                                        color = MaterialTheme.colorScheme.primary,
+                                        trackColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                1 -> {
+                    if (expensesByDept.isEmpty()) {
+                        Text("No department breakdown available", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            expensesByDept.forEach { (dept, amount) ->
+                                val pct = if (totalExpenses > 0) amount / totalExpenses else 0.0
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(dept, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                                        Text("KES ${String.format("%,.0f", amount)} (${String.format("%.1f%%", pct * 100)})", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                                    }
+                                    LinearProgressIndicator(
+                                        progress = { pct.toFloat() },
+                                        modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
+                                        color = MaterialTheme.colorScheme.secondary,
+                                        trackColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.3f)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                2 -> {
+                    if (topCostItems.isEmpty()) {
+                        Text("No items available", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            topCostItems.forEachIndexed { index, item ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
+                                        .padding(10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Surface(
+                                            color = MaterialTheme.colorScheme.primary,
+                                            shape = CircleShape,
+                                            modifier = Modifier.size(24.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Text("#${index + 1}", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                        Column {
+                                            Text(item.itemPurchased, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text("${item.department} • ${item.expenseType}", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                                        }
+                                    }
+                                    Text(
+                                        text = "KES ${String.format("%,.0f", item.amountSpent)}",
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = MaterialTheme.colorScheme.error,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ExpenseItemCard(
+    expense: ExpenseRow
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("expense_item_card_${expense.id}"),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = expense.expenseType,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+                        }
+                        Surface(
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = expense.department,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = expense.itemPurchased,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                Text(
+                    text = "KES ${String.format("%,.0f", expense.amountSpent)}",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Recorded by: ${expense.recordedBy.ifBlank { "Staff" }} • ${expense.date}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "Method: ${expense.paymentMethod.ifBlank { "Mpesa" }} • Qty: ${if (expense.quantity % 1.0 == 0.0) expense.quantity.toInt().toString() else expense.quantity.toString()}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                    )
+                }
+
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    shape = CircleShape
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = "Locked Ledger Record",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Text(
+                            text = "Ledger Record",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AddExpenseDialog(
+    availableMonths: List<String>,
+    onDismiss: () -> Unit,
+    onConfirm: (
+        date: String,
+        recordedBy: String,
+        department: String,
+        expenseType: String,
+        itemPurchased: String,
+        quantity: Double,
+        amountSpent: Double,
+        paymentMethod: String,
+        month: String
+    ) -> Unit
+) {
+    var date by remember { mutableStateOf("2026-07-12") }
+    var recordedBy by remember { mutableStateOf("Manager Mary") }
+    var department by remember { mutableStateOf("Salon Admin") }
+    var expenseType by remember { mutableStateOf("Inventory") }
+    var itemPurchased by remember { mutableStateOf("") }
+    var quantityText by remember { mutableStateOf("1") }
+    var amountText by remember { mutableStateOf("") }
+    var paymentMethod by remember { mutableStateOf("Mpesa") }
+    var selectedMonth by remember { mutableStateOf(availableMonths.firstOrNull() ?: "July 2026") }
+
+    val departmentsList = listOf("Salon Admin", "Nails", "Hair", "Massage", "Utilities", "General")
+    val typesList = listOf("Inventory", "Bills & Tokens", "Tea & Refreshments", "Rent & Premises", "Supplies", "Salaries")
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).testTag("add_expense_dialog")
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(20.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Record New Expense",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close")
+                    }
+                }
+
+                OutlinedTextField(
+                    value = itemPurchased,
+                    onValueChange = { itemPurchased = it },
+                    label = { Text("Item / Particular Purchased *") },
+                    placeholder = { Text("e.g. Gel Polish Bottles, Electricity Tokens") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("input_item_purchased")
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedTextField(
+                        value = amountText,
+                        onValueChange = { amountText = it },
+                        label = { Text("Amount (KES) *") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f).testTag("input_amount_spent")
+                    )
+
+                    OutlinedTextField(
+                        value = quantityText,
+                        onValueChange = { quantityText = it },
+                        label = { Text("Quantity") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(0.8f).testTag("input_quantity")
+                    )
+                }
+
+                OutlinedTextField(
+                    value = recordedBy,
+                    onValueChange = { recordedBy = it },
+                    label = { Text("Recorded By") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("input_recorded_by")
+                )
+
+                // Department Options
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Department", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        departmentsList.forEach { dept ->
+                            FilterChip(
+                                selected = department == dept,
+                                onClick = { department = dept },
+                                label = { Text(dept, fontSize = 11.sp) }
+                            )
+                        }
+                    }
+                }
+
+                // Expense Type Options
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Expense Type", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        typesList.forEach { type ->
+                            FilterChip(
+                                selected = expenseType == type,
+                                onClick = { expenseType = type },
+                                label = { Text(type, fontSize = 11.sp) }
+                            )
+                        }
+                    }
+                }
+
+                // Payment Method & Date
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedTextField(
+                        value = date,
+                        onValueChange = { date = it },
+                        label = { Text("Date") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f).testTag("input_expense_date")
+                    )
+
+                    OutlinedTextField(
+                        value = paymentMethod,
+                        onValueChange = { paymentMethod = it },
+                        label = { Text("Method") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f).testTag("input_payment_method")
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text("Cancel")
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            val amount = amountText.toDoubleOrNull() ?: 0.0
+                            val qty = quantityText.toDoubleOrNull() ?: 1.0
+                            if (itemPurchased.isNotBlank() && amount > 0) {
+                                onConfirm(
+                                    date,
+                                    recordedBy,
+                                    department,
+                                    expenseType,
+                                    itemPurchased,
+                                    qty,
+                                    amount,
+                                    paymentMethod,
+                                    selectedMonth
+                                )
+                            }
+                        },
+                        enabled = itemPurchased.isNotBlank() && (amountText.toDoubleOrNull() ?: 0.0) > 0,
+                        modifier = Modifier.testTag("save_expense_button")
+                    ) {
+                        Text("Save Expense")
+                    }
                 }
             }
         }

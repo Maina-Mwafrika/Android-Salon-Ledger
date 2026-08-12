@@ -1,6 +1,7 @@
 package com.example.data
 
 import android.util.Log
+import com.example.ui.parseTimestampToMillis
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +31,12 @@ class PaymentRepository(private val paymentDao: PaymentDao) {
     val allPaymentsFlow: Flow<List<PaymentRow>> = activeConfigFlow.flatMapLatest { config ->
         val spreadsheetId = config?.spreadsheetId ?: "demo_spreadsheet"
         paymentDao.getPaymentsBySpreadsheetFlow(spreadsheetId)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val allExpensesFlow: Flow<List<ExpenseRow>> = activeConfigFlow.flatMapLatest { config ->
+        val spreadsheetId = config?.spreadsheetId ?: "demo_spreadsheet"
+        paymentDao.getExpensesBySpreadsheetFlow(spreadsheetId)
     }
 
     private val client = OkHttpClient.Builder()
@@ -224,6 +231,89 @@ class PaymentRepository(private val paymentDao: PaymentDao) {
                 it.copy(name = normalizeEmployeeName(it.name))
             }
             paymentDao.insertPayments(samplePaymentsNormalized)
+
+            paymentDao.clearAllExpenses()
+            val sampleExpenses = listOf(
+                ExpenseRow(
+                    spreadsheetId = "demo_spreadsheet",
+                    rowIndex = 2,
+                    date = "2026-07-01",
+                    recordedBy = "Jane Wambui",
+                    department = "Nails",
+                    expenseType = "Inventory",
+                    itemPurchased = "Gel Polish Set (Peach & Pastel)",
+                    quantity = 2.0,
+                    amountSpent = 3500.0,
+                    paymentMethod = "Mpesa",
+                    month = "July 2026"
+                ),
+                ExpenseRow(
+                    spreadsheetId = "demo_spreadsheet",
+                    rowIndex = 3,
+                    date = "2026-07-02",
+                    recordedBy = "Manager Mary",
+                    department = "Utilities",
+                    expenseType = "Bills & Tokens",
+                    itemPurchased = "Electricity Token (Tokens)",
+                    quantity = 1.0,
+                    amountSpent = 4500.0,
+                    paymentMethod = "Mpesa",
+                    month = "July 2026"
+                ),
+                ExpenseRow(
+                    spreadsheetId = "demo_spreadsheet",
+                    rowIndex = 4,
+                    date = "2026-07-03",
+                    recordedBy = "John Mwangi",
+                    department = "Massage",
+                    expenseType = "Supplies",
+                    itemPurchased = "Aromatherapy Oils & Towels",
+                    quantity = 3.0,
+                    amountSpent = 2800.0,
+                    paymentMethod = "Cash",
+                    month = "July 2026"
+                ),
+                ExpenseRow(
+                    spreadsheetId = "demo_spreadsheet",
+                    rowIndex = 5,
+                    date = "2026-07-05",
+                    recordedBy = "Manager Mary",
+                    department = "Salon Admin",
+                    expenseType = "Rent & Premises",
+                    itemPurchased = "Monthly Parlor Space Rent",
+                    quantity = 1.0,
+                    amountSpent = 15000.0,
+                    paymentMethod = "Bank Transfer",
+                    month = "July 2026"
+                ),
+                ExpenseRow(
+                    spreadsheetId = "demo_spreadsheet",
+                    rowIndex = 6,
+                    date = "2026-07-08",
+                    recordedBy = "Mary Atieno",
+                    department = "Hair",
+                    expenseType = "Inventory",
+                    itemPurchased = "Shampoo 5L & Deep Conditioner",
+                    quantity = 2.0,
+                    amountSpent = 3200.0,
+                    paymentMethod = "Mpesa",
+                    month = "July 2026"
+                ),
+                ExpenseRow(
+                    spreadsheetId = "demo_spreadsheet",
+                    rowIndex = 7,
+                    date = "2026-07-12",
+                    recordedBy = "Jane Wambui",
+                    department = "Salon Admin",
+                    expenseType = "Tea & Refreshments",
+                    itemPurchased = "Milk, Tea Leaves & Snacks",
+                    quantity = 1.0,
+                    amountSpent = 1200.0,
+                    paymentMethod = "Cash",
+                    month = "July 2026"
+                )
+            )
+            paymentDao.insertExpenses(sampleExpenses)
             
             val defaultConfig = SheetConfig(
                 spreadsheetUrl = "https://docs.google.com/spreadsheets/d/demo_spreadsheet/edit",
@@ -740,6 +830,13 @@ class PaymentRepository(private val paymentDao: PaymentDao) {
         paymentDao.clearPaymentsForSpreadsheet(spreadsheetId)
         paymentDao.insertPayments(parsedRows)
 
+        onProgress("Fetching Expenses sheet at GID $EXPENSES_GID...", 0.95f)
+        try {
+            refreshExpensesSheetDataInternal(spreadsheetId)
+        } catch (e: Exception) {
+            Log.w("PaymentRepository", "Failed to sync expenses GID $EXPENSES_GID: ${e.message}")
+        }
+
         val updatedConfig = config.copy(
             lastSyncTime = System.currentTimeMillis(),
             useLocalDemo = false,
@@ -1058,21 +1155,28 @@ private fun parseCsvContent(content: String): List<List<String>> {
                 cols[headerResult.monthIdx].trim()
             } else ""
             val finalMonth = if (month.isNotBlank()) month else {
-                val timestampLower = finalTimestamp.lowercase()
-                when {
-                    timestampLower.contains("jan") -> "January"
-                    timestampLower.contains("feb") -> "February"
-                    timestampLower.contains("mar") -> "March"
-                    timestampLower.contains("apr") -> "April"
-                    timestampLower.contains("may") -> "May"
-                    timestampLower.contains("jun") -> "June"
-                    timestampLower.contains("jul") -> "July"
-                    timestampLower.contains("aug") -> "August"
-                    timestampLower.contains("sep") -> "September"
-                    timestampLower.contains("oct") -> "October"
-                    timestampLower.contains("nov") -> "November"
-                    timestampLower.contains("dec") -> "December"
-                    else -> "Unknown"
+                val ms = parseTimestampToMillis(finalTimestamp)
+                if (ms > 0L) {
+                    val cal = java.util.Calendar.getInstance().apply { timeInMillis = ms }
+                    val monthFull = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+                    monthFull[cal.get(java.util.Calendar.MONTH)]
+                } else {
+                    val timestampLower = finalTimestamp.lowercase()
+                    when {
+                        timestampLower.contains("jan") -> "January"
+                        timestampLower.contains("feb") -> "February"
+                        timestampLower.contains("mar") -> "March"
+                        timestampLower.contains("apr") -> "April"
+                        timestampLower.contains("may") -> "May"
+                        timestampLower.contains("jun") -> "June"
+                        timestampLower.contains("jul") -> "July"
+                        timestampLower.contains("aug") -> "August"
+                        timestampLower.contains("sep") -> "September"
+                        timestampLower.contains("oct") -> "October"
+                        timestampLower.contains("nov") -> "November"
+                        timestampLower.contains("dec") -> "December"
+                        else -> "Unknown"
+                    }
                 }
             }
 
@@ -1532,4 +1636,298 @@ private fun parseCsvContent(content: String): List<List<String>> {
         val salonShareIdx: Int,
         val monthIdx: Int
     )
+
+    // --- Expense Sync & Helper Methods ---
+    suspend fun addExpense(expense: ExpenseRow) {
+        withContext(Dispatchers.IO) {
+            paymentDao.insertExpense(expense)
+        }
+    }
+
+    suspend fun deleteExpense(id: Long) {
+        withContext(Dispatchers.IO) {
+            paymentDao.deleteExpenseById(id)
+        }
+    }
+
+    private suspend fun refreshExpensesSheetDataInternal(
+        spreadsheetId: String
+    ) = withContext(Dispatchers.IO) {
+        if (spreadsheetId.isBlank() || spreadsheetId == "demo_spreadsheet") return@withContext
+
+        var parsedSheetData: List<List<String>>? = null
+
+        val gidUrls = listOf(
+            "https://docs.google.com/spreadsheets/d/$spreadsheetId/export?format=csv&gid=$EXPENSES_GID",
+            "https://docs.google.com/spreadsheets/d/$spreadsheetId/gviz/tq?tqx=out:csv&gid=$EXPENSES_GID",
+            "https://docs.google.com/spreadsheets/d/$spreadsheetId/export?gid=$EXPENSES_GID&format=csv"
+        )
+
+        for (url in gidUrls) {
+            try {
+                val request = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                    .build()
+
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@use
+                    val content = response.body?.string() ?: ""
+                    val trimmed = content.trim()
+                    if (trimmed.isBlank() || trimmed.startsWith("<") || trimmed.contains("<!DOCTYPE html", ignoreCase = true)) return@use
+
+                    val parsed = parseCsvContent(content)
+                    if (parsed.isNotEmpty()) {
+                        parsedSheetData = parsed
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("PaymentRepository", "Expenses fetch failed for $url: ${e.message}")
+            }
+            if (parsedSheetData != null) break
+        }
+
+        val sheetData = parsedSheetData ?: return@withContext
+
+        val headerResult = findExpensesHeaderRow(sheetData)
+        if (headerResult.headerRowIndex == -1) {
+            Log.w("PaymentRepository", "No valid header found for Expenses sheet at GID $EXPENSES_GID")
+            return@withContext
+        }
+
+        val parsedExpenseRows = parseExpenseDataRows(sheetData, headerResult, spreadsheetId)
+        if (parsedExpenseRows.isNotEmpty()) {
+            paymentDao.clearExpensesForSpreadsheet(spreadsheetId)
+            paymentDao.insertExpenses(parsedExpenseRows)
+            Log.d("PaymentRepository", "Successfully synced ${parsedExpenseRows.size} expense rows from GID $EXPENSES_GID")
+        }
+    }
+
+    private data class ExpensesHeaderResult(
+        val headerRowIndex: Int = -1,
+        val dateIdx: Int = -1,
+        val recordedByIdx: Int = -1,
+        val departmentIdx: Int = -1,
+        val expenseTypeIdx: Int = -1,
+        val itemPurchasedIdx: Int = -1,
+        val quantityIdx: Int = -1,
+        val amountSpentIdx: Int = -1,
+        val paymentMethodIdx: Int = -1,
+        val monthIdx: Int = -1
+    )
+
+    private fun findExpensesHeaderRow(sheetData: List<List<String>>): ExpensesHeaderResult {
+        var maxScore = -1
+        var bestResult = ExpensesHeaderResult()
+        val scanLimit = minOf(sheetData.size, 100)
+
+        for (rIdx in 0 until scanLimit) {
+            val row = sheetData[rIdx]
+            var dateIdx = -1
+            var recordedByIdx = -1
+            var departmentIdx = -1
+            var expenseTypeIdx = -1
+            var itemPurchasedIdx = -1
+            var quantityIdx = -1
+            var amountSpentIdx = -1
+            var paymentMethodIdx = -1
+            var monthIdx = -1
+
+            for ((cIdx, valStr) in row.withIndex()) {
+                val lower = normalizeHeaderCell(valStr)
+                if (lower.isBlank()) continue
+
+                // Explicit priority check for Amount / Cost column:
+                if (lower.contains("cost") || lower.contains("amount") || lower.contains("spent") || lower.contains("price") || lower.contains("kes") || lower.contains("ksh") || lower.contains("val") || lower.contains("total")) {
+                    if (amountSpentIdx == -1 && !lower.contains("quantity") && !lower.contains("qty")) {
+                        amountSpentIdx = cIdx
+                        continue
+                    }
+                }
+
+                // Recorded By
+                if (lower.contains("recorded") || lower.contains("entered") || lower.contains("staff") || lower.contains("by") || lower.contains("user")) {
+                    if (recordedByIdx == -1) {
+                        recordedByIdx = cIdx
+                        continue
+                    }
+                }
+
+                // Department
+                if (lower.contains("department") || lower.contains("dept") || lower.contains("section")) {
+                    if (departmentIdx == -1) {
+                        departmentIdx = cIdx
+                        continue
+                    }
+                }
+
+                // Expense Type / Category
+                if (lower.contains("expense type") || lower.contains("category") || (lower.contains("type") && !lower.contains("item"))) {
+                    if (expenseTypeIdx == -1) {
+                        expenseTypeIdx = cIdx
+                        continue
+                    }
+                }
+
+                // Item Purchased / Particulars / Description
+                if (lower.contains("item") || lower.contains("purchased") || lower.contains("particular") || lower.contains("description") || lower.contains("product") || lower.contains("service")) {
+                    if (itemPurchasedIdx == -1) {
+                        itemPurchasedIdx = cIdx
+                        continue
+                    }
+                }
+
+                // Quantity
+                if (lower.contains("quantity") || lower.contains("qty") || lower.contains("count") || lower.contains("units")) {
+                    if (quantityIdx == -1) {
+                        quantityIdx = cIdx
+                        continue
+                    }
+                }
+
+                // Payment Method
+                if (lower.contains("payment") || lower.contains("method") || lower.contains("paid via") || lower.contains("mode")) {
+                    if (paymentMethodIdx == -1) {
+                        paymentMethodIdx = cIdx
+                        continue
+                    }
+                }
+
+                // Month
+                if (lower.contains("month") || lower.contains("period")) {
+                    if (monthIdx == -1) {
+                        monthIdx = cIdx
+                        continue
+                    }
+                }
+
+                // Date
+                if (lower == "date" || lower == "timestamp" || lower.contains("date") || lower.contains("day")) {
+                    if (dateIdx == -1) {
+                        dateIdx = cIdx
+                        continue
+                    }
+                }
+            }
+
+            var score = 0
+            if (dateIdx != -1) score += 3
+            if (recordedByIdx != -1) score += 3
+            if (departmentIdx != -1) score += 3
+            if (expenseTypeIdx != -1) score += 4
+            if (itemPurchasedIdx != -1) score += 5
+            if (amountSpentIdx != -1) score += 5
+            if (paymentMethodIdx != -1) score += 2
+            if (monthIdx != -1) score += 2
+
+            if (score > maxScore && (amountSpentIdx != -1 || itemPurchasedIdx != -1)) {
+                maxScore = score
+                bestResult = ExpensesHeaderResult(
+                    headerRowIndex = rIdx,
+                    dateIdx = dateIdx,
+                    recordedByIdx = recordedByIdx,
+                    departmentIdx = departmentIdx,
+                    expenseTypeIdx = expenseTypeIdx,
+                    itemPurchasedIdx = itemPurchasedIdx,
+                    quantityIdx = quantityIdx,
+                    amountSpentIdx = amountSpentIdx,
+                    paymentMethodIdx = paymentMethodIdx,
+                    monthIdx = monthIdx
+                )
+            }
+        }
+
+        // FALLBACK: If header row was found but amountSpentIdx was still -1, scan row 1 data to find the column index containing numeric amounts
+        if (bestResult.headerRowIndex != -1 && bestResult.amountSpentIdx == -1) {
+            val startDataRow = bestResult.headerRowIndex + 1
+            if (startDataRow < sheetData.size) {
+                val candidateColCounts = mutableMapOf<Int, Int>()
+                for (r in startDataRow until minOf(sheetData.size, startDataRow + 10)) {
+                    val row = sheetData[r]
+                    for ((cIdx, cell) in row.withIndex()) {
+                        if (cIdx != bestResult.itemPurchasedIdx && cIdx != bestResult.dateIdx && cIdx != bestResult.departmentIdx) {
+                            val amt = parseAmountValue(cell)
+                            if (amt > 0.0) {
+                                candidateColCounts[cIdx] = (candidateColCounts[cIdx] ?: 0) + 1
+                            }
+                        }
+                    }
+                }
+                val bestCol = candidateColCounts.maxByOrNull { it.value }?.key ?: -1
+                if (bestCol != -1) {
+                    bestResult = bestResult.copy(amountSpentIdx = bestCol)
+                }
+            }
+        }
+
+        return bestResult
+    }
+
+    private fun parseAmountValue(str: String): Double {
+        if (str.isBlank()) return 0.0
+        var clean = str.replace("KES", "", ignoreCase = true)
+            .replace("KSHS", "", ignoreCase = true)
+            .replace("KSH", "", ignoreCase = true)
+            .replace("USD", "", ignoreCase = true)
+            .replace("$", "")
+            .replace(",", "")
+            .replace("=", "")
+            .replace("/=", "")
+            .replace("-", "")
+            .trim()
+        val regex = """\d+(\.\d+)?""".toRegex()
+        val match = regex.find(clean)
+        return match?.value?.toDoubleOrNull() ?: 0.0
+    }
+
+    private fun parseExpenseDataRows(
+        sheetData: List<List<String>>,
+        header: ExpensesHeaderResult,
+        spreadsheetId: String
+    ): List<ExpenseRow> {
+        val result = mutableListOf<ExpenseRow>()
+        for (rIdx in (header.headerRowIndex + 1) until sheetData.size) {
+            val row = sheetData[rIdx]
+            if (row.all { it.isBlank() }) continue
+
+            fun getCell(idx: Int): String = if (idx in row.indices) row[idx].trim() else ""
+
+            val dateStr = getCell(header.dateIdx)
+            val recordedByStr = getCell(header.recordedByIdx)
+            val departmentStr = getCell(header.departmentIdx)
+            val expenseTypeStr = getCell(header.expenseTypeIdx)
+            val itemPurchasedStr = getCell(header.itemPurchasedIdx)
+            val quantityRaw = parseAmountValue(getCell(header.quantityIdx)).let { if (it <= 0.0) 1.0 else it }
+            val amountSpent = parseAmountValue(getCell(header.amountSpentIdx))
+            val paymentMethodStr = getCell(header.paymentMethodIdx)
+            val monthStr = getCell(header.monthIdx)
+            val finalExpenseMonth = if (monthStr.isNotBlank()) monthStr else {
+                val ms = parseTimestampToMillis(dateStr)
+                if (ms > 0L) {
+                    val cal = java.util.Calendar.getInstance().apply { timeInMillis = ms }
+                    val monthFull = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+                    "${monthFull[cal.get(java.util.Calendar.MONTH)]} ${cal.get(java.util.Calendar.YEAR)}"
+                } else ""
+            }
+
+            if (itemPurchasedStr.isBlank() && amountSpent == 0.0) continue
+
+            result.add(
+                ExpenseRow(
+                    spreadsheetId = spreadsheetId,
+                    rowIndex = rIdx + 1,
+                    date = dateStr,
+                    recordedBy = recordedByStr,
+                    department = departmentStr.ifBlank { "General" },
+                    expenseType = expenseTypeStr.ifBlank { "Operational" },
+                    itemPurchased = itemPurchasedStr.ifBlank { "Expense Item #${rIdx + 1}" },
+                    quantity = quantityRaw,
+                    amountSpent = amountSpent,
+                    paymentMethod = paymentMethodStr.ifBlank { "Mpesa" },
+                    month = finalExpenseMonth
+                )
+            )
+        }
+        return result
+    }
 }

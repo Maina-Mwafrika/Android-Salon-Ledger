@@ -52,4 +52,26 @@ interface PaymentDao {
 
     @Query("DELETE FROM paid_records_cache")
     suspend fun clearPaidCache()
+
+    // --- Expense Queries ---
+    @Query("SELECT * FROM expense_rows ORDER BY id DESC")
+    fun getAllExpensesFlow(): Flow<List<ExpenseRow>>
+
+    @Query("SELECT * FROM expense_rows WHERE spreadsheetId = :spreadsheetId ORDER BY rowIndex ASC")
+    fun getExpensesBySpreadsheetFlow(spreadsheetId: String): Flow<List<ExpenseRow>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertExpenses(expenses: List<ExpenseRow>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertExpense(expense: ExpenseRow)
+
+    @Query("DELETE FROM expense_rows WHERE spreadsheetId = :spreadsheetId")
+    suspend fun clearExpensesForSpreadsheet(spreadsheetId: String)
+
+    @Query("DELETE FROM expense_rows")
+    suspend fun clearAllExpenses()
+
+    @Query("DELETE FROM expense_rows WHERE id = :id")
+    suspend fun deleteExpenseById(id: Long)
 }
