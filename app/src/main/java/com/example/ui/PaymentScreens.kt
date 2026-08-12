@@ -3585,6 +3585,8 @@ fun ExpensesTabContent(viewModel: PaymentViewModel, isUnlocked: Boolean) {
     val expenses by viewModel.filteredExpenses.collectAsStateWithLifecycle()
     val totalExpenses by viewModel.totalExpensesAmount.collectAsStateWithLifecycle()
     val grossRevenue by viewModel.totalGrossRevenueForPeriod.collectAsStateWithLifecycle()
+    val salonShare by viewModel.totalSalonShareForPeriod.collectAsStateWithLifecycle()
+    val commissions by viewModel.totalCommissionsForPeriod.collectAsStateWithLifecycle()
     val netProfit by viewModel.netProfit.collectAsStateWithLifecycle()
     val profitMargin by viewModel.profitMarginPct.collectAsStateWithLifecycle()
     val selectedPeriod by viewModel.expensesTimePeriod.collectAsStateWithLifecycle()
@@ -3665,6 +3667,8 @@ fun ExpensesTabContent(viewModel: PaymentViewModel, isUnlocked: Boolean) {
             item {
                 ExpensesProfitabilityCard(
                     grossRevenue = grossRevenue,
+                    commissions = commissions,
+                    salonShare = salonShare,
                     totalExpenses = totalExpenses,
                     netProfit = netProfit,
                     profitMargin = profitMargin,
@@ -3815,6 +3819,8 @@ fun ExpensesTabContent(viewModel: PaymentViewModel, isUnlocked: Boolean) {
 @Composable
 fun ExpensesProfitabilityCard(
     grossRevenue: Double,
+    commissions: Double,
+    salonShare: Double,
     totalExpenses: Double,
     netProfit: Double,
     profitMargin: Double,
@@ -3841,27 +3847,45 @@ fun ExpensesProfitabilityCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp)
+                ) {
                     Text(
-                        text = "Net Profitability ($periodName)",
-                        style = MaterialTheme.typography.labelMedium,
+                        text = if (isProfitable) "Net Operating Profit" else "Net Operating Loss",
+                        style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
-                        color = Color.Black.copy(alpha = 0.7f)
+                        color = Color.Black.copy(alpha = 0.8f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
+                    Text(
+                        text = "Period: $periodName",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Medium,
+                        color = Color.Black.copy(alpha = 0.55f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = "KES ${String.format("%,.0f", netProfit)}",
                         style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.ExtraBold,
-                        color = profitColor
+                        color = profitColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
                 Surface(
                     color = profitColor,
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.wrapContentWidth()
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
@@ -3871,11 +3895,18 @@ fun ExpensesProfitabilityCard(
                             tint = Color.White,
                             modifier = Modifier.size(16.dp)
                         )
+                        val marginLabel = if (isProfitable) {
+                            String.format(java.util.Locale.US, "+%.1f%% Margin", profitMargin)
+                        } else {
+                            String.format(java.util.Locale.US, "%.1f%% Loss", profitMargin)
+                        }
                         Text(
-                            text = String.format("%.1f%% Margin", profitMargin),
+                            text = marginLabel,
                             color = Color.White,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            softWrap = false
                         )
                     }
                 }
@@ -3895,30 +3926,63 @@ fun ExpensesProfitabilityCard(
                     )
                     Text(
                         text = "KES ${String.format("%,.0f", grossRevenue)}",
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF1B5E20)
                     )
                 }
 
-                Column(horizontalAlignment = Alignment.End) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = "Total Expenses",
+                        text = "Staff Commissions",
                         style = MaterialTheme.typography.labelSmall,
                         color = Color.Black.copy(alpha = 0.6f)
                     )
                     Text(
-                        text = "KES ${String.format("%,.0f", totalExpenses)}",
-                        style = MaterialTheme.typography.titleMedium,
+                        text = "- KES ${String.format("%,.0f", commissions)}",
+                        style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.error
+                        color = Color(0xFFC62828)
+                    )
+                }
+
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "Salon Net Share",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.Black.copy(alpha = 0.6f)
+                    )
+                    Text(
+                        text = "KES ${String.format("%,.0f", salonShare)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF0D47A1)
                     )
                 }
             }
 
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Less Total Expenses:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Black.copy(alpha = 0.7f),
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = "- KES ${String.format("%,.0f", totalExpenses)}",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+
             // Visual Progress Comparison Bar
-            val totalMagnitude = maxOf(grossRevenue, totalExpenses, 1.0)
-            val expFraction = (totalExpenses / totalMagnitude).toFloat().coerceIn(0f, 1f)
+            val totalBase = maxOf(salonShare, totalExpenses, 1.0)
+            val expFraction = (totalExpenses / totalBase).toFloat().coerceIn(0f, 1f)
 
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(
@@ -3942,12 +4006,12 @@ fun ExpensesProfitabilityCard(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "Expenses: ${if (grossRevenue > 0) String.format("%.0f%%", (totalExpenses/grossRevenue)*100) else "0%"}",
+                        text = "Expenses: ${if (salonShare > 0) String.format("%.0f%%", (totalExpenses / salonShare) * 100) else "0%"}",
                         style = MaterialTheme.typography.labelSmall,
                         color = Color.Black.copy(alpha = 0.6f)
                     )
                     Text(
-                        text = "Retained Profit: ${if (grossRevenue > 0) String.format("%.0f%%", (netProfit/grossRevenue)*100) else "0%"}",
+                        text = "Retained Profit: ${if (salonShare > 0) String.format("%.0f%%", (netProfit / salonShare) * 100) else "0%"}",
                         style = MaterialTheme.typography.labelSmall,
                         color = Color.Black.copy(alpha = 0.6f),
                         fontWeight = FontWeight.Bold
@@ -4016,7 +4080,7 @@ fun ExpensesVisualizerCard(
                 Tab(
                     selected = selectedTab == 2,
                     onClick = { selectedTab = 2 },
-                    text = { Text("Top Cost Items", fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
+                    text = { Text("Cost Items (${topCostItems.size})", fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
                 )
             }
 
@@ -4025,7 +4089,13 @@ fun ExpensesVisualizerCard(
                     if (expensesByType.isEmpty()) {
                         Text("No expense type breakdown available", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
                     } else {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 320.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
                             expensesByType.forEach { (type, amount) ->
                                 val pct = if (totalExpenses > 0) amount / totalExpenses else 0.0
                                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -4051,7 +4121,13 @@ fun ExpensesVisualizerCard(
                     if (expensesByDept.isEmpty()) {
                         Text("No department breakdown available", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
                     } else {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 320.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
                             expensesByDept.forEach { (dept, amount) ->
                                 val pct = if (totalExpenses > 0) amount / totalExpenses else 0.0
                                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -4077,41 +4153,71 @@ fun ExpensesVisualizerCard(
                     if (topCostItems.isEmpty()) {
                         Text("No items available", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
                     } else {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            topCostItems.forEachIndexed { index, item ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
-                                        .padding(10.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "All Cost Items (Sorted Highest to Lowest)",
+                                    fontSize = 11.sp,
+                                    color = Color.Gray,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = "Scroll down ↓",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 340.dp)
+                                    .verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                topCostItems.forEachIndexed { index, item ->
                                     Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                        modifier = Modifier.weight(1f)
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
+                                            .padding(10.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Surface(
-                                            color = MaterialTheme.colorScheme.primary,
-                                            shape = CircleShape,
-                                            modifier = Modifier.size(24.dp)
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                            modifier = Modifier.weight(1f)
                                         ) {
-                                            Box(contentAlignment = Alignment.Center) {
-                                                Text("#${index + 1}", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                            Surface(
+                                                color = if (index < 3) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.7f),
+                                                shape = CircleShape,
+                                                modifier = Modifier.size(24.dp)
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Text("#${index + 1}", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                                }
+                                            }
+                                            Column {
+                                                Text(item.itemPurchased, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                Text(
+                                                    text = "${item.department} • ${item.expenseType}${if (item.date.isNotBlank()) " • ${item.date}" else ""}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = Color.Gray
+                                                )
                                             }
                                         }
-                                        Column {
-                                            Text(item.itemPurchased, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                            Text("${item.department} • ${item.expenseType}", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                                        }
+                                        Text(
+                                            text = "KES ${String.format("%,.0f", item.amountSpent)}",
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = MaterialTheme.colorScheme.error,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
                                     }
-                                    Text(
-                                        text = "KES ${String.format("%,.0f", item.amountSpent)}",
-                                        fontWeight = FontWeight.ExtraBold,
-                                        color = MaterialTheme.colorScheme.error,
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
                                 }
                             }
                         }

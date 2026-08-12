@@ -1,6 +1,7 @@
 package com.example.data
 
 import android.util.Log
+import com.example.ui.normalizeMonthString
 import com.example.ui.parseTimestampToMillis
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -1154,31 +1155,7 @@ private fun parseCsvContent(content: String): List<List<String>> {
             val month = if (headerResult.monthIdx != -1 && headerResult.monthIdx < cols.size) {
                 cols[headerResult.monthIdx].trim()
             } else ""
-            val finalMonth = if (month.isNotBlank()) month else {
-                val ms = parseTimestampToMillis(finalTimestamp)
-                if (ms > 0L) {
-                    val cal = java.util.Calendar.getInstance().apply { timeInMillis = ms }
-                    val monthFull = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
-                    monthFull[cal.get(java.util.Calendar.MONTH)]
-                } else {
-                    val timestampLower = finalTimestamp.lowercase()
-                    when {
-                        timestampLower.contains("jan") -> "January"
-                        timestampLower.contains("feb") -> "February"
-                        timestampLower.contains("mar") -> "March"
-                        timestampLower.contains("apr") -> "April"
-                        timestampLower.contains("may") -> "May"
-                        timestampLower.contains("jun") -> "June"
-                        timestampLower.contains("jul") -> "July"
-                        timestampLower.contains("aug") -> "August"
-                        timestampLower.contains("sep") -> "September"
-                        timestampLower.contains("oct") -> "October"
-                        timestampLower.contains("nov") -> "November"
-                        timestampLower.contains("dec") -> "December"
-                        else -> "Unknown"
-                    }
-                }
-            }
+            val finalMonth = normalizeMonthString(month, finalTimestamp)
 
             parsedRows.add(
                 PaymentRow(
@@ -1901,14 +1878,7 @@ private fun parseCsvContent(content: String): List<List<String>> {
             val amountSpent = parseAmountValue(getCell(header.amountSpentIdx))
             val paymentMethodStr = getCell(header.paymentMethodIdx)
             val monthStr = getCell(header.monthIdx)
-            val finalExpenseMonth = if (monthStr.isNotBlank()) monthStr else {
-                val ms = parseTimestampToMillis(dateStr)
-                if (ms > 0L) {
-                    val cal = java.util.Calendar.getInstance().apply { timeInMillis = ms }
-                    val monthFull = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
-                    "${monthFull[cal.get(java.util.Calendar.MONTH)]} ${cal.get(java.util.Calendar.YEAR)}"
-                } else ""
-            }
+            val finalExpenseMonth = normalizeMonthString(monthStr, dateStr)
 
             if (itemPurchasedStr.isBlank() && amountSpent == 0.0) continue
 

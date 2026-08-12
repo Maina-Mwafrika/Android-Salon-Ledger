@@ -151,7 +151,12 @@ class PaymentViewModel(application: Application) : AndroidViewModel(application)
 
     // --- EXPENSES & PROFITABILITY STATE ---
     val allExpenses: StateFlow<List<ExpenseRow>> = repository.allExpensesFlow
-        .map { dbExpenses -> ensureMonthlyRentExpenses(dbExpenses) }
+        .map { dbExpenses ->
+            val normalized = dbExpenses.map { row ->
+                row.copy(month = normalizeMonthString(row.month, row.date))
+            }
+            ensureMonthlyRentExpenses(normalized)
+        }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val expensesTimePeriod = MutableStateFlow("All Time")
@@ -168,9 +173,30 @@ class PaymentViewModel(application: Application) : AndroidViewModel(application)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val availableMonths: StateFlow<List<String>> = combine(allPayments, allExpenses) { payments, expenses ->
-        val paymentMonths = payments.map { it.month }.filter { it.isNotBlank() }
-        val expenseMonths = expenses.map { it.month }.filter { it.isNotBlank() }
-        (paymentMonths + expenseMonths).distinct().sorted()
+        val todayCal = java.util.Calendar.getInstance()
+        val curYear = todayCal.get(java.util.Calendar.YEAR)
+        val curMonthIdx = todayCal.get(java.util.Calendar.MONTH)
+        val monthNames = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+
+        val paymentMonths = payments.map { normalizeMonthString(it.month, it.timestamp) }.filter { it.isNotBlank() }
+        val expenseMonths = expenses.map { normalizeMonthString(it.month, it.date) }.filter { it.isNotBlank() }
+
+        (paymentMonths + expenseMonths)
+            .distinct()
+            .filter { mStr ->
+                val parts = mStr.split(" ")
+                val mName = parts[0]
+                val yVal = parts.getOrNull(1)?.toIntOrNull() ?: curYear
+                val mIdx = monthNames.indexOfFirst { it.equals(mName, ignoreCase = true) }
+                if (mIdx != -1) {
+                    yVal < curYear || (yVal == curYear && mIdx <= curMonthIdx)
+                } else true
+            }
+            .sortedWith(Comparator { m1, m2 ->
+                val ms1 = parseTimestampToMillis("01 $m1")
+                val ms2 = parseTimestampToMillis("01 $m2")
+                ms1.compareTo(ms2)
+            })
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), listOf("July 2026", "August 2026"))
 
     // Filtered Expenses according to Period, Search, Dept, Type
@@ -234,7 +260,10 @@ class PaymentViewModel(application: Application) : AndroidViewModel(application)
                     val tMs = parseTimestampToMillis(item.date, item.month)
                     if (tMs > 0L) tMs in weekStartMs..weekEndMs else false
                 }
-                else -> item.month.equals(period, ignoreCase = true) || item.date.contains(period, ignoreCase = true)
+                else -> {
+                    val normM = normalizeMonthString(item.month, item.date)
+                    normM.equals(period, ignoreCase = true) || item.month.equals(period, ignoreCase = true) || item.date.contains(period, ignoreCase = true)
+                }
             }
             val matchesSearch = if (search.isBlank()) true else {
                 item.itemPurchased.contains(search, ignoreCase = true) ||
@@ -270,7 +299,7 @@ class PaymentViewModel(application: Application) : AndroidViewModel(application)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val topCostItems: StateFlow<List<ExpenseRow>> = filteredExpenses.map { list ->
-        list.sortedByDescending { it.amountSpent }.take(5)
+        list.sortedByDescending { it.amountSpent }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // Income for the same selected time period
@@ -328,7 +357,10 @@ class PaymentViewModel(application: Application) : AndroidViewModel(application)
                     val tMs = parseTimestampToMillis(payment.timestamp, payment.month)
                     if (tMs > 0L) tMs in weekStartMs..weekEndMs else false
                 }
-                else -> payment.month.equals(period, ignoreCase = true) || payment.timestamp.contains(period, ignoreCase = true)
+                else -> {
+                    val normM = normalizeMonthString(payment.month, payment.timestamp)
+                    normM.equals(period, ignoreCase = true) || payment.month.equals(period, ignoreCase = true) || payment.timestamp.contains(period, ignoreCase = true)
+                }
             }
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -337,16 +369,20 @@ class PaymentViewModel(application: Application) : AndroidViewModel(application)
         list.sumOf { it.amountPaid }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.0)
 
+    val totalCommissionsForPeriod: StateFlow<Double> = filteredPaymentsForPeriod.map { list ->
+        list.sumOf { it.staffCommission }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.0)
+
     val totalSalonShareForPeriod: StateFlow<Double> = filteredPaymentsForPeriod.map { list ->
         list.sumOf { if (it.salonShare > 0) it.salonShare else (it.amountPaid - it.staffCommission) }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.0)
 
-    val netProfit: StateFlow<Double> = combine(totalGrossRevenueForPeriod, totalExpensesAmount) { rev, exp ->
-        rev - exp
+    val netProfit: StateFlow<Double> = combine(totalSalonShareForPeriod, totalExpensesAmount) { salonShare, exp ->
+        salonShare - exp
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.0)
 
-    val profitMarginPct: StateFlow<Double> = combine(totalGrossRevenueForPeriod, netProfit) { rev, profit ->
-        if (rev > 0) (profit / rev) * 100.0 else 0.0
+    val profitMarginPct: StateFlow<Double> = combine(totalSalonShareForPeriod, netProfit) { salonShare, profit ->
+        if (salonShare > 0) (profit / salonShare) * 100.0 else 0.0
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.0)
 
     fun setExpensesTimePeriod(period: String) {
@@ -859,6 +895,66 @@ fun parseAndFormatDate(dateStr: String, hintMonthStr: String = ""): String {
     return clean
 }
 
+fun normalizeMonthString(rawMonth: String, dateStr: String = ""): String {
+    val clean = rawMonth.trim()
+    val monthNames = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+    val monthShort = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+    val lower = clean.lowercase()
+    var foundMonthIdx = -1
+    for (i in monthNames.indices) {
+        if (lower.contains(monthNames[i].lowercase()) || lower.contains(monthShort[i].lowercase())) {
+            foundMonthIdx = i
+            break
+        }
+    }
+
+    val yearRegex = """\b(20\d{2})\b""".toRegex()
+    var yearStr = yearRegex.find(clean)?.value
+
+    if (yearStr == null && dateStr.isNotBlank()) {
+        val dateMs = parseTimestampToMillis(dateStr, rawMonth)
+        if (dateMs > 0L) {
+            val cal = java.util.Calendar.getInstance().apply { timeInMillis = dateMs }
+            yearStr = cal.get(java.util.Calendar.YEAR).toString()
+            if (foundMonthIdx == -1) {
+                foundMonthIdx = cal.get(java.util.Calendar.MONTH)
+            }
+        }
+    }
+
+    if (yearStr == null) {
+        yearStr = "2026"
+    }
+
+    if (foundMonthIdx != -1) {
+        return "${monthNames[foundMonthIdx]} $yearStr"
+    }
+
+    if (clean.isNotBlank()) {
+        val dateMs = parseTimestampToMillis(dateStr, clean)
+        if (dateMs > 0L) {
+            val cal = java.util.Calendar.getInstance().apply { timeInMillis = dateMs }
+            val m = cal.get(java.util.Calendar.MONTH)
+            val y = cal.get(java.util.Calendar.YEAR)
+            return "${monthNames[m]} $y"
+        }
+        return "$clean $yearStr"
+    }
+
+    if (dateStr.isNotBlank()) {
+        val dateMs = parseTimestampToMillis(dateStr)
+        if (dateMs > 0L) {
+            val cal = java.util.Calendar.getInstance().apply { timeInMillis = dateMs }
+            val m = cal.get(java.util.Calendar.MONTH)
+            val y = cal.get(java.util.Calendar.YEAR)
+            return "${monthNames[m]} $y"
+        }
+    }
+
+    return "August 2026"
+}
+
 /**
  * Checks if a date string represents a date on or prior to current date.
  * Expenses with dates past the current date (up to today) cannot be deleted.
@@ -906,10 +1002,40 @@ fun isPastOrCurrentDate(dateStr: String): Boolean {
 }
 
 private fun ensureMonthlyRentExpenses(dbExpenses: List<ExpenseRow>): List<ExpenseRow> {
-    val monthList = listOf(
-        "June 2026", "July 2026", "August 2026", "September 2026", "October 2026", "November 2026", "December 2026"
-    )
-    val result = dbExpenses.toMutableList()
+    val todayCal = java.util.Calendar.getInstance()
+    val curYear = todayCal.get(java.util.Calendar.YEAR)
+    val curMonthIdx = todayCal.get(java.util.Calendar.MONTH) // 0-based
+
+    todayCal.set(java.util.Calendar.HOUR_OF_DAY, 23)
+    todayCal.set(java.util.Calendar.MINUTE, 59)
+    todayCal.set(java.util.Calendar.SECOND, 59)
+    todayCal.set(java.util.Calendar.MILLISECOND, 999)
+    val todayEndMs = todayCal.timeInMillis
+
+    val monthNames = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+
+    // Filter out dbExpenses that are past current date / future months
+    val result = dbExpenses.filter { row ->
+        val ms = parseTimestampToMillis(row.date, row.month)
+        if (ms > 0L) {
+            ms <= todayEndMs
+        } else {
+            val parts = row.month.split(" ")
+            val mName = parts[0]
+            val yVal = parts.getOrNull(1)?.toIntOrNull() ?: curYear
+            val mIdx = monthNames.indexOfFirst { it.equals(mName, ignoreCase = true) }
+            if (mIdx != -1) {
+                yVal < curYear || (yVal == curYear && mIdx <= curMonthIdx)
+            } else true
+        }
+    }.toMutableList()
+
+    val monthList = mutableListOf<String>()
+    // Generate months from June 2026 up to current month (e.g. August 2026)
+    for (mIdx in 5..curMonthIdx) { // 5 = June
+        monthList.add("${monthNames[mIdx]} $curYear")
+    }
+
     var rentIdCounter = -350001L
 
     for (mName in monthList) {
